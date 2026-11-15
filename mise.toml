@@ -55,10 +55,15 @@ set -eu
 dest="$(wslpath "$(cmd.exe /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\\r')")/Programs/Rio"
 src=target/x86_64-pc-windows-msvc/release
 mkdir -p "$dest/x64" "$dest/arm64"
-cp "$src/rio.exe" "$src/conpty.dll" "$dest/"
-cp "$src/x64/OpenConsole.exe" "$dest/x64/"
-cp "$src/arm64/OpenConsole.exe" "$dest/arm64/"
-echo "Installed into $dest"
+# A running exe or dll can't be overwritten but can be renamed, so move it aside;
+# leftovers from earlier installs are removed unless still in use.
+stamp=$(date +%s)
+for f in rio.exe conpty.dll x64/OpenConsole.exe arm64/OpenConsole.exe; do
+  for old in "$dest/$f".*.old; do [ -e "$old" ] && rm -f "$old" 2>/dev/null || true; done
+  [ -e "$dest/$f" ] && mv "$dest/$f" "$dest/$f.$stamp.old"
+  cp "$src/$f" "$dest/$f"
+done
+echo "Installed into $dest (running instances keep the old binary until restarted)"
 """
 
 # Dev profile: incremental and without the release profile's LTO, so a rebuild takes seconds.
