@@ -104,13 +104,14 @@ pub fn create_window_builder(
                 window_builder.with_undecorated_shadow(use_undecorated_shadow);
         }
 
-        if let Some(use_no_redirection_bitmap) =
-            config.window.windows_use_no_redirection_bitmap
-        {
-            // This sets WS_EX_NOREDIRECTIONBITMAP.
-            window_builder =
-                window_builder.with_no_redirection_bitmap(use_no_redirection_bitmap);
-        }
+        // Sets WS_EX_NOREDIRECTIONBITMAP. A see-through window needs it, or the
+        // GDI redirection bitmap painted at startup covers the backdrop until resized.
+        let use_no_redirection_bitmap =
+            config.window.windows_use_no_redirection_bitmap.unwrap_or(
+                config.window.opacity < 1. || config.window.blur.is_enabled(),
+            );
+        window_builder =
+            window_builder.with_no_redirection_bitmap(use_no_redirection_bitmap);
     }
 
     #[cfg(target_os = "macos")]
