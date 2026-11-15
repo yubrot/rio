@@ -63,9 +63,7 @@ objc = { workspace = true }
 
 [build-dependencies]
 cfg_aliases = "0.2.1"
-
-[target.'cfg(windows)'.build-dependencies]
-winres = "0.1.12"
+embed-resource = "3.0.12"
 
 [target.'cfg(windows)'.dependencies]
 ahash = { version = "0.8.12", default-features = false, features = ["std"] }
