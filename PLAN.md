@@ -26,15 +26,3 @@ Notes:
 
 - `rio-window` Windows `WM_NCCALCSIZE` currently either keeps the full non-client area or removes all of it; this needs a mode that removes only the caption, plus `WM_NCHITTEST` for drag regions, resize borders and caption buttons (`HTMAXBUTTON` for Snap Layouts).
 - The macOS path (`Decorations::Transparent`, `macos-use-unified-titlebar`, `padding_top_from_config`, `island.rs`) is the reference for laying out the tab strip in the title bar area.
-
-## 3. Exe icon in cross builds
-
-`mise run build:windows` (cargo-xwin from WSL) produces a `rio.exe` without the icon resource Explorer and the taskbar show. `frontends/rioterm/build.rs` embeds it in `load_app_icon` behind `#[cfg(windows)]` (the build host, not the target), and `winres` is a `cfg(windows)` build-dependency; off Windows, `winres` would use MinGW's `windres`, whose output doesn't fit the MSVC target anyway.
-
-Goal: the icon is embedded whenever the target is Windows, whatever the host.
-
-Notes:
-
-- Replace `winres` with `embed-resource`, which compiles `.rc` files with `llvm-rc` when cross-compiling to MSVC (`llvm-rc` ships with clang; it is in `/usr/sbin` here). A one-line `.rc` (`1 ICON "rio-logo.ico"`) referencing `src/router/resources/images/rio-logo.ico` is enough.
-- Gate on `CARGO_CFG_TARGET_OS == "windows"` only, and make the build-dependency unconditional.
-- Worth sending upstream: it lets non-Windows hosts build the Windows package.

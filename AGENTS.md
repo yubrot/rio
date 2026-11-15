@@ -18,7 +18,7 @@ Tools are managed by mise (`mise.toml`). Windows builds are cross-compiled from 
 - `mise run build:windows`: build `rio.exe`
 - `mise run run:windows`: build and launch it with the bundled ConPTY
 - `mise run install:windows`: build and install it into `%LOCALAPPDATA%\Programs\Rio`
-- `mise run check:windows`: clippy for the Windows target
+- `mise run check:windows`: clippy for the Windows target (leave warnings and errors inherited from upstream as they are, to avoid conflicts)
 
 Rio for Windows reads `%LOCALAPPDATA%\rio\config.toml`.
 
