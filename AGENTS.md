@@ -32,4 +32,4 @@ macOS builds run on a Mac: `build:macos` (universal `Rio.app`) and `install:maco
 ## Workflow
 
 - Commit directly to the `yubrot-fork` branch; no feature branches or PRs.
-- Running `mise run dev:windows` or `mise run install:windows` to try out a build is fine at any time.
+- Running `mise run dev:windows` to try out a build is fine at any time; run `mise run install:windows` only when asked, since the installed Rio may be in use.
