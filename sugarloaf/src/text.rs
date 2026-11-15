@@ -466,7 +466,9 @@ impl Text {
             };
 
             self.instances.push(TextInstance {
-                pos: [pen_x + glyph.x, py + glyph.y.max(0.0)],
+                // Whole device pixels: the shader copies texels 1:1, so a fractional
+                // origin makes rows/columns drop or double at the rasterizer's rounding
+                pos: [(pen_x + glyph.x).round(), (py + glyph.y.max(0.0)).round()],
                 glyph_pos: [slot.x as u32, slot.y as u32],
                 glyph_size: [slot.w as u32, slot.h as u32],
                 bearings: [slot.bearing_x, slot.bearing_y],
