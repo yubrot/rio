@@ -55,6 +55,13 @@ cp "$src/arm64/OpenConsole.exe" "$dest/arm64/"
 echo "Installed into $dest"
 """
 
+# Dev profile: incremental and without the release profile's LTO, so a rebuild takes seconds.
+# cargo-xwin defaults the runner to wine; WSL's interop runs the test `.exe` directly instead.
+[tasks."test:windows"]
+description = "Run rioterm's tests for the Windows target"
+env = { CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER = "env" }
+run = "cargo xwin test -p rioterm --target x86_64-pc-windows-msvc"
+
 [tasks."check:windows"]
 description = "Lint the Windows build (warnings fail)"
 run = "cargo xwin clippy --release -p rioterm --target x86_64-pc-windows-msvc -- -D warnings"

@@ -18,6 +18,8 @@ Tools are managed by mise (`mise.toml`). Windows builds are cross-compiled from 
 - `mise run build:windows`: build `rio.exe`
 - `mise run run:windows`: build and launch it with the bundled ConPTY
 - `mise run install:windows`: build and install it into `%LOCALAPPDATA%\Programs\Rio`
+- `mise run test:windows`: rioterm's tests for the Windows target (extra args go to `cargo test`)
+  - Don't add `--release`: the release profile (LTO, one codegen unit, no incremental) is for shipping and takes minutes per rebuild
 - `mise run check:windows`: clippy for the Windows target
   - It always fails on lints inherited from upstream; fix the ones in files you change, leave the rest as they are
   - Errors in `rio-window` stop it before `rioterm` is checked; run `cargo xwin clippy --release -p rioterm --target x86_64-pc-windows-msvc` (without `-D warnings`) to see all diagnostics
