@@ -1,6 +1,6 @@
 [tools]
-rust = { version = "1.99.1", components = "clippy,rustfmt", targets = "x86_64-pc-windows-msvc" }
-"github:rust-cross/cargo-xwin" = "0.23.1"
+rust = { version = "1.99.1", components = "clippy,rustfmt", targets = "x86_64-pc-windows-msvc,x86_64-apple-darwin,aarch64-apple-darwin" }
+"github:rust-cross/cargo-xwin" = { version = "0.23.1", os = ["linux"] }
 
 # Rio for Windows is built from WSL: `cargo xwin` links it against Microsoft's C runtime and
 # Windows SDK (downloaded once into ~/.cache/cargo-xwin), and WSL's interop runs the `.exe`.
@@ -58,3 +58,22 @@ echo "Installed into $dest"
 [tasks."check:windows"]
 description = "Lint the Windows build (warnings fail)"
 run = "cargo xwin clippy --release -p rioterm --target x86_64-pc-windows-msvc -- -D warnings"
+
+# Rio for macOS is built on a Mac, delegating to upstream's Makefile (a universal Rio.app).
+
+[tasks."build:macos"]
+description = "Build Rio for macOS (target/release/osx/Rio.app)"
+run = "make app-universal"
+
+[tasks."run:macos"]
+description = "Build Rio for macOS and launch it"
+depends = ["build:macos"]
+run = "open target/release/osx/Rio.app"
+
+[tasks."install:macos"]
+description = "Build Rio for macOS, ad-hoc sign it and install it into /Applications"
+run = "make install-macos"
+
+[tasks."check:macos"]
+description = "Lint the macOS build (warnings fail)"
+run = "cargo clippy --release -p rioterm -- -D warnings"

@@ -23,6 +23,8 @@ Tools are managed by mise (`mise.toml`). Windows builds are cross-compiled from 
 
 Rio for Windows reads `%LOCALAPPDATA%\rio\config.toml`.
 
+macOS builds run on a Mac, delegating to upstream's `Makefile`: `build:macos` (universal `Rio.app`), `run:macos`, `install:macos` (into `/Applications`), `check:macos`.
+
 ## Workflow
 
 - Commit directly to the `yubrot-fork` branch; no feature branches or PRs.
