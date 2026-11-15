@@ -11,17 +11,16 @@ description = "Build Rio for Windows (target/x86_64-pc-windows-msvc/release/rio.
 run = "cargo xwin build --release -p rioterm --target x86_64-pc-windows-msvc"
 
 # The modern ConPTY Rio's releases ship beside rio.exe (misc/windows/conhost/README.md), laid out
-# next to the built exe. fetch.ps1 needs PowerShell 7, so this downloads the same package pinned
+# next to the built exes (release and fast profiles). fetch.ps1 needs PowerShell 7, so this downloads the same package pinned
 # by the same version and SHA-256, without its Authenticode check.
 [tasks."build:conpty"]
-description = "Lay out conpty.dll and OpenConsole.exe beside the Windows build"
+description = "Lay out conpty.dll and OpenConsole.exe beside the Windows builds"
 dir = "{{config_root}}"
 run = """
 set -eu
 script=misc/windows/conhost/fetch.ps1
 version=$(sed -n 's/.*\\[string\\]\\$Version = "\\(.*\\)".*/\\1/p' "$script")
 sha256=$(sed -n 's/.*\\[string\\]\\$Sha256 = "\\(.*\\)".*/\\1/p' "$script")
-out=target/x86_64-pc-windows-msvc/release
 work=target/conpty/$version
 if [ ! -d "$work/x" ]; then
   mkdir -p "$work"
@@ -29,16 +28,23 @@ if [ ! -d "$work/x" ]; then
   echo "$sha256  $work/conpty.nupkg" | sha256sum -c -
   python3 -m zipfile -e "$work/conpty.nupkg" "$work/x"
 fi
-mkdir -p "$out/x64" "$out/arm64"
-cp "$work/x/runtimes/win-x64/native/conpty.dll" "$out/"
-cp "$work/x/build/native/runtimes/x64/OpenConsole.exe" "$out/x64/"
-cp "$work/x/build/native/runtimes/arm64/OpenConsole.exe" "$out/arm64/"
+for out in target/x86_64-pc-windows-msvc/release target/x86_64-pc-windows-msvc/fast; do
+  mkdir -p "$out/x64" "$out/arm64"
+  cp "$work/x/runtimes/win-x64/native/conpty.dll" "$out/"
+  cp "$work/x/build/native/runtimes/x64/OpenConsole.exe" "$out/x64/"
+  cp "$work/x/build/native/runtimes/arm64/OpenConsole.exe" "$out/arm64/"
+done
 """
 
-[tasks."run:windows"]
-description = "Build Rio for Windows and launch it detached"
-depends = ["build:windows", "build:conpty"]
-run = "setsid -f target/x86_64-pc-windows-msvc/release/rio.exe </dev/null >/dev/null 2>&1"
+# The fast profile (Cargo.toml) rebuilds in seconds, unlike the release profile's LTO.
+[tasks."dev:windows"]
+description = "Build Rio for Windows in the fast profile and launch it detached"
+depends = ["build:conpty"]
+run = """
+set -eu
+cargo xwin build --profile fast -p rioterm --target x86_64-pc-windows-msvc
+setsid -f target/x86_64-pc-windows-msvc/fast/rio.exe </dev/null >/dev/null 2>&1
+"""
 
 # Copied out of WSL so the installed Rio runs independently of target/ (and rebuilds don't hit a locked exe).
 [tasks."install:windows"]
@@ -72,10 +78,13 @@ run = "cargo xwin clippy --release -p rioterm --target x86_64-pc-windows-msvc --
 description = "Build Rio for macOS (target/release/osx/Rio.app)"
 run = "make app-universal"
 
-[tasks."run:macos"]
-description = "Build Rio for macOS and launch it"
-depends = ["build:macos"]
-run = "open target/release/osx/Rio.app"
+[tasks."dev:macos"]
+description = "Build Rio for macOS in the fast profile and run it"
+run = "cargo run --profile fast -p rioterm"
+
+[tasks."test:macos"]
+description = "Run rioterm's tests"
+run = "cargo test -p rioterm"
 
 [tasks."install:macos"]
 description = "Build Rio for macOS, ad-hoc sign it and install it into /Applications"

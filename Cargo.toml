@@ -104,6 +104,15 @@ strip = "none"
 debug = false
 lto = false
 
+# Optimized like release, but without LTO and with incremental builds, for trying out changes.
+[profile.fast]
+inherits = "release"
+strip = "none"
+debug = false
+lto = false
+codegen-units = 256
+incremental = true
+
 [profile.dev]
 split-debuginfo = "unpacked"
 lto = false
