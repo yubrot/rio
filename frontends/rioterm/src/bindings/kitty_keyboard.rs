@@ -78,10 +78,11 @@ pub fn build_key_sequence(key: &KeyEvent, mods: ModifiersState, mode: Mode) -> V
     // Push event type.
     if kitty_event_type {
         payload.push(':');
+        // A release is never a repeat, whatever the platform reports
         let event_type = match key.state {
+            ElementState::Released => '3',
             _ if key.repeat => '2',
             ElementState::Pressed => '1',
-            ElementState::Released => '3',
         };
         payload.push(event_type);
     }

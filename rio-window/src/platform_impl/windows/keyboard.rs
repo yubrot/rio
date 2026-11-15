@@ -699,8 +699,8 @@ struct KeyLParam {
     pub scancode: u8,
     pub extended: bool,
 
-    /// This is `previous_state XOR transition_state`. See the lParam for WM_KEYDOWN and WM_KEYUP
-    /// for further details.
+    /// A key-down whose key was already down. A key-up never repeats, even when the key-down was
+    /// swallowed elsewhere (e.g. by a keyboard hook) and its previous-state bit is clear.
     pub is_repeat: bool,
 }
 
@@ -710,7 +710,7 @@ fn destructure_key_lparam(lparam: LPARAM) -> KeyLParam {
     KeyLParam {
         scancode: ((lparam >> 16) & 0xff) as u8,
         extended: ((lparam >> 24) & 0x01) != 0,
-        is_repeat: (previous_state ^ transition_state) != 0,
+        is_repeat: previous_state == 1 && transition_state == 0,
     }
 }
 
