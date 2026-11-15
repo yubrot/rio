@@ -1813,6 +1813,16 @@ pub enum Fullscreen {
     Borderless(Option<MonitorHandle>),
 }
 
+/// A caption button of a title bar drawn by the application.
+///
+/// See [`WindowEvent::CaptionButtonsChanged`](crate::event::WindowEvent::CaptionButtonsChanged).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CaptionButton {
+    Minimize,
+    Maximize,
+    Close,
+}
+
 /// The theme variant to use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Theme {

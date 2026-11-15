@@ -2,7 +2,8 @@ use crate::dpi::{PhysicalPosition, PhysicalSize, Size};
 use crate::icon::Icon;
 use crate::keyboard::ModifiersState;
 use crate::platform_impl::platform::{event_loop, util, Fullscreen, SelectedCursor};
-use crate::window::{Theme, WindowAttributes};
+use crate::platform::windows::TitlebarLayout;
+use crate::window::{CaptionButton, Theme, WindowAttributes};
 use bitflags::bitflags;
 use std::sync::MutexGuard;
 use std::{io, ptr};
@@ -58,6 +59,11 @@ pub(crate) struct WindowState {
     pub dragging: bool,
 
     pub skip_taskbar: bool,
+
+    /// Used by `WM_NCHITTEST` when `MARKER_CUSTOM_TITLEBAR` is set.
+    pub titlebar: TitlebarLayout,
+    pub caption_hovered: Option<CaptionButton>,
+    pub caption_pressed: Option<CaptionButton>,
 }
 
 #[derive(Clone)]
@@ -125,6 +131,9 @@ bitflags! {
 
         const CLIP_CHILDREN = 1 << 22;
 
+        /// Decorated window whose caption is replaced by an application-drawn title bar.
+        const MARKER_CUSTOM_TITLEBAR = 1 << 23;
+
         const EXCLUSIVE_FULLSCREEN_OR_MASK = WindowFlags::ALWAYS_ON_TOP.bits();
     }
 }
@@ -178,6 +187,10 @@ impl WindowState {
             dragging: false,
 
             skip_taskbar: false,
+
+            titlebar: TitlebarLayout::default(),
+            caption_hovered: None,
+            caption_pressed: None,
         }
     }
 
@@ -247,6 +260,15 @@ impl MouseProperties {
 }
 
 impl WindowFlags {
+    pub fn has_custom_titlebar(self) -> bool {
+        self.contains(
+            WindowFlags::MARKER_DECORATIONS | WindowFlags::MARKER_CUSTOM_TITLEBAR,
+        ) && !self.intersects(
+            WindowFlags::MARKER_EXCLUSIVE_FULLSCREEN
+                | WindowFlags::MARKER_BORDERLESS_FULLSCREEN,
+        )
+    }
+
     fn mask(mut self) -> WindowFlags {
         if self.contains(WindowFlags::MARKER_EXCLUSIVE_FULLSCREEN) {
             self |= WindowFlags::EXCLUSIVE_FULLSCREEN_OR_MASK;
@@ -457,6 +479,7 @@ impl WindowFlags {
             if !self.contains(WindowFlags::MARKER_DECORATIONS) {
                 style &= !(WS_CAPTION | WS_SIZEBOX);
             }
+            let client_top = rect.top;
 
             util::win_to_err({
                 let b_menu = !GetMenu(hwnd).is_null();
@@ -476,6 +499,10 @@ impl WindowFlags {
                     AdjustWindowRectEx(&mut rect, style, b_menu.into(), style_ex)
                 }
             })?;
+            // The caption and the top border are part of the client area, see `WM_NCCALCSIZE`.
+            if self.has_custom_titlebar() {
+                rect.top = client_top;
+            }
             Ok(rect)
         }
     }

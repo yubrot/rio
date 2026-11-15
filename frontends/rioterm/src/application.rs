@@ -1786,6 +1786,12 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                 }
             }
 
+            WindowEvent::CaptionButtonsChanged { hovered, pressed } => {
+                if route.window.screen.set_caption_buttons(hovered, pressed) {
+                    route.request_redraw();
+                }
+            }
+
             WindowEvent::CursorLeft { .. } => {
                 if route.window.screen.clear_close_button_hover() {
                     route.request_redraw();
@@ -1918,15 +1924,16 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     route.request_redraw();
                 }
 
-                // The macOS full-size content view keeps this band as custom
-                // window chrome even when hide-if-single hides the island.
-                // Other platforms only reserve it while the island is drawn.
+                // The macOS full-size content view and a Rio-drawn title bar keep
+                // this band as custom window chrome even when hide-if-single hides
+                // the island. Otherwise it is only reserved while the island is drawn.
                 use crate::renderer::island::ISLAND_HEIGHT;
                 let scale_factor = route.window.screen.sugarloaf.scale_factor();
                 let island_height_px = (ISLAND_HEIGHT * scale_factor) as f64;
                 let num_tabs = route.window.screen.ctx().len();
-                let nav = &route.window.screen.renderer.navigation;
-                if nav.chrome_band_reserved(num_tabs) && y <= island_height_px {
+                if route.window.screen.renderer.chrome_band_reserved(num_tabs)
+                    && y <= island_height_px
+                {
                     route.window.winit_window.set_cursor(CursorIcon::Default);
                     return;
                 }
@@ -2348,6 +2355,10 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                 }
 
                 route.window.screen.resize(new_size);
+                route
+                    .window
+                    .screen
+                    .update_titlebar_state(&route.window.winit_window);
                 if self.title_tracks_size {
                     route.window.screen.refresh_titles();
                 }
@@ -2419,6 +2430,9 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                         );
                     }
                 }
+
+                #[cfg(target_os = "windows")]
+                route.window.sync_titlebar_layout();
 
                 #[cfg(target_os = "windows")]
                 if !route.window.initial_frame_rendered {

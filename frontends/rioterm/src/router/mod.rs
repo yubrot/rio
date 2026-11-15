@@ -2,8 +2,8 @@ pub mod routes;
 mod window;
 use crate::event::EventProxy;
 use crate::router::window::{
-    configure_window, create_window_builder, DEFAULT_MINIMUM_WINDOW_HEIGHT,
-    DEFAULT_MINIMUM_WINDOW_WIDTH,
+    configure_window, create_window_builder, uses_custom_titlebar,
+    DEFAULT_MINIMUM_WINDOW_HEIGHT, DEFAULT_MINIMUM_WINDOW_WIDTH,
 };
 use crate::screen::{Screen, ScreenWindowProperties};
 use assistant::Assistant;
@@ -757,6 +757,9 @@ pub struct RouteWindow<'a> {
     pub needs_render_after_occlusion: bool,
     #[cfg(target_os = "windows")]
     pub initial_frame_rendered: bool,
+    /// Last title bar hit-test layout pushed to the OS, for dedup.
+    #[cfg(target_os = "windows")]
+    titlebar_layout: Option<rio_window::platform::windows::TitlebarLayout>,
     pub render_timestamp: Instant,
     #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub vblank_interval: Duration,
@@ -767,6 +770,19 @@ pub struct RouteWindow<'a> {
 impl<'a> RouteWindow<'a> {
     pub fn configure_window(&mut self, config: &rio_backend::config::Config) {
         configure_window(&self.winit_window, config);
+    }
+
+    /// Hands the OS the hit-test regions of the title bar Rio draws, when they changed.
+    #[cfg(target_os = "windows")]
+    pub fn sync_titlebar_layout(&mut self) {
+        use rio_window::platform::windows::WindowExtWindows;
+        let Some(layout) = self.screen.titlebar_layout() else {
+            return;
+        };
+        if self.titlebar_layout.as_ref() != Some(&layout) {
+            self.winit_window.set_titlebar_layout(layout.clone());
+            self.titlebar_layout = Some(layout);
+        }
     }
 
     pub fn wait_until(&self) -> Option<Duration> {
@@ -888,6 +904,13 @@ impl<'a> RouteWindow<'a> {
             raw_window_handle: winit_window.window_handle().unwrap().into(),
             raw_display_handle: winit_window.display_handle().unwrap().into(),
             window_id: winit_window.id(),
+            titlebar: uses_custom_titlebar(config, quake).then(|| {
+                crate::renderer::titlebar::Titlebar {
+                    fullscreen: winit_window.fullscreen().is_some(),
+                    maximized: winit_window.is_maximized(),
+                    ..Default::default()
+                }
+            }),
         };
 
         let mut screen =
@@ -950,6 +973,8 @@ impl<'a> RouteWindow<'a> {
             needs_render_after_occlusion: false,
             #[cfg(target_os = "windows")]
             initial_frame_rendered: false,
+            #[cfg(target_os = "windows")]
+            titlebar_layout: None,
             winit_window,
             screen,
         }

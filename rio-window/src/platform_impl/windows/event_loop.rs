@@ -37,7 +37,8 @@ use windows_sys::Win32::UI::Input::Ime::{
     GCS_COMPSTR, GCS_RESULTSTR, ISC_SHOWUICOMPOSITIONWINDOW,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+    ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TME_NONCLIENT,
+    TRACKMOUSEEVENT,
 };
 use windows_sys::Win32::UI::Input::Pointer::{
     POINTER_FLAG_DOWN, POINTER_FLAG_UP, POINTER_FLAG_UPDATE,
@@ -65,7 +66,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_IME_STARTCOMPOSITION, WM_INPUT, WM_INPUT_DEVICE_CHANGE, WM_KEYDOWN, WM_KEYUP,
     WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
     WM_MENUCHAR, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE,
-    WM_NCCALCSIZE, WM_NCCREATE, WM_NCDESTROY, WM_NCLBUTTONDOWN, WM_PAINT, WM_POINTERDOWN,
+    WM_NCCALCSIZE, WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDBLCLK,
+    WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT, WM_POINTERDOWN,
     WM_POINTERUP, WM_POINTERUPDATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR,
     WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE, WM_SIZING, WM_SYSCOMMAND, WM_SYSKEYDOWN,
     WM_SYSKEYUP, WM_TOUCH, WM_WINDOWPOSCHANGED, WM_WINDOWPOSCHANGING, WM_XBUTTONDOWN,
@@ -97,10 +99,11 @@ use crate::platform_impl::platform::window_state::{
     CursorFlags, ImeState, WindowFlags, WindowState,
 };
 use crate::platform_impl::platform::{
-    raw_input, util, wrap_device_id, Fullscreen, WindowId, DEVICE_ID,
+    raw_input, titlebar, util, wrap_device_id, Fullscreen, WindowId, DEVICE_ID,
 };
 use crate::window::{
-    CustomCursor as RootCustomCursor, CustomCursorSource, Theme, WindowId as RootWindowId,
+    CaptionButton, CustomCursor as RootCustomCursor, CustomCursorSource, Theme,
+    WindowId as RootWindowId,
 };
 use runner::{EventLoopRunner, EventLoopRunnerShared};
 
@@ -1119,6 +1122,26 @@ fn update_modifiers(window: HWND, userdata: &WindowData) {
     }
 }
 
+fn update_caption_buttons(
+    window: HWND,
+    userdata: &WindowData,
+    hovered: Option<CaptionButton>,
+    pressed: Option<CaptionButton>,
+) {
+    {
+        let mut w = userdata.window_state_lock();
+        if w.caption_hovered == hovered && w.caption_pressed == pressed {
+            return;
+        }
+        w.caption_hovered = hovered;
+        w.caption_pressed = pressed;
+    }
+    userdata.send_event(Event::WindowEvent {
+        window_id: RootWindowId(WindowId(window)),
+        event: WindowEvent::CaptionButtonsChanged { hovered, pressed },
+    });
+}
+
 unsafe fn gain_active_focus(window: HWND, userdata: &WindowData) {
     use crate::event::WindowEvent::Focused;
 
@@ -1279,7 +1302,23 @@ unsafe fn public_window_callback_inner(
     // the git blame and history would be preserved.
     let callback = || match msg {
         WM_NCCALCSIZE => {
-            let window_flags = userdata.window_state_lock().window_flags;
+            let (window_flags, scale_factor) = {
+                let w = userdata.window_state_lock();
+                (w.window_flags, w.scale_factor)
+            };
+            if wparam != 0 && window_flags.has_custom_titlebar() {
+                // Keep the OS frame but extend the client area over the caption and the top
+                // border; `WM_NCHITTEST` gives the top border back.
+                let params = unsafe { &mut *(lparam as *mut NCCALCSIZE_PARAMS) };
+                let top = params.rgrc[0].top;
+                unsafe { DefWindowProcW(window, msg, wparam, lparam) };
+                params.rgrc[0].top = top;
+                if util::is_maximized(window) {
+                    params.rgrc[0].top += titlebar::top_border_height(scale_factor);
+                }
+                result = ProcResult::Value(0);
+                return;
+            }
             if wparam == 0 || window_flags.contains(WindowFlags::MARKER_DECORATIONS) {
                 result = ProcResult::DefWindowProc(wparam);
                 return;
@@ -1335,6 +1374,81 @@ unsafe fn public_window_callback_inner(
             state.set_window_flags_in_place(|f| {
                 f.remove(WindowFlags::MARKER_IN_SIZE_MOVE)
             });
+            result = ProcResult::Value(0);
+        }
+
+        WM_NCHITTEST => {
+            let default = unsafe { DefWindowProcW(window, msg, wparam, lparam) };
+            let w = userdata.window_state_lock();
+            if !w.window_flags.has_custom_titlebar() {
+                result = ProcResult::Value(default);
+                return;
+            }
+            let hit = titlebar::hit_test(
+                window,
+                default as u32,
+                super::get_x_lparam(lparam as u32) as i32,
+                super::get_y_lparam(lparam as u32) as i32,
+                util::is_maximized(window),
+                w.scale_factor,
+                &w.titlebar,
+            );
+            result = ProcResult::Value(hit as LRESULT);
+        }
+
+        // Caption buttons are drawn by the application: keep `DefWindowProc` from painting and
+        // tracking the legacy ones, and report their pointer state instead.
+        WM_NCMOUSEMOVE | WM_NCMOUSELEAVE
+            if userdata
+                .window_state_lock()
+                .window_flags
+                .has_custom_titlebar() =>
+        {
+            let hovered = if msg == WM_NCMOUSEMOVE {
+                titlebar::caption_button(wparam)
+            } else {
+                None
+            };
+            let pressed = userdata
+                .window_state_lock()
+                .caption_pressed
+                .filter(|&p| Some(p) == hovered);
+            update_caption_buttons(window, userdata, hovered, pressed);
+            if hovered.is_some() {
+                unsafe {
+                    TrackMouseEvent(&mut TRACKMOUSEEVENT {
+                        cbSize: mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE | TME_NONCLIENT,
+                        hwndTrack: window,
+                        dwHoverTime: HOVER_DEFAULT,
+                    })
+                };
+                result = ProcResult::Value(0);
+            } else {
+                result = ProcResult::DefWindowProc(wparam);
+            }
+        }
+
+        WM_NCLBUTTONDOWN | WM_NCLBUTTONDBLCLK | WM_NCLBUTTONUP
+            if titlebar::caption_button(wparam).is_some()
+                && userdata
+                    .window_state_lock()
+                    .window_flags
+                    .has_custom_titlebar() =>
+        {
+            let button = titlebar::caption_button(wparam);
+            if msg == WM_NCLBUTTONUP {
+                if userdata.window_state_lock().caption_pressed == button {
+                    let command = titlebar::caption_button_command(
+                        button.unwrap(),
+                        util::is_maximized(window),
+                    );
+                    unsafe { PostMessageW(window, WM_SYSCOMMAND, command as WPARAM, 0) };
+                }
+                update_caption_buttons(window, userdata, button, None);
+            } else {
+                update_caption_buttons(window, userdata, button, button);
+            }
             result = ProcResult::Value(0);
         }
 

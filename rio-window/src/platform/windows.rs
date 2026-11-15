@@ -10,7 +10,7 @@ use crate::dpi::PhysicalSize;
 use crate::event::DeviceId;
 use crate::event_loop::EventLoopBuilder;
 use crate::monitor::MonitorHandle;
-use crate::window::{BadIcon, Icon, Window, WindowAttributes};
+use crate::window::{BadIcon, CaptionButton, Icon, Window, WindowAttributes};
 
 /// Window Handle type used by Win32 API
 pub type HWND = *mut c_void;
@@ -103,6 +103,34 @@ pub enum CornerPreference {
     ///
     /// Round the corners if appropriate, with a small radius.
     RoundSmall = 3,
+}
+
+/// A rectangle in physical pixels, relative to the top-left corner of the client area.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TitlebarRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+impl TitlebarRect {
+    pub fn contains(&self, x: i32, y: i32) -> bool {
+        x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
+    }
+}
+
+/// Hit-test regions of a title bar drawn by the application.
+///
+/// See [`WindowAttributesExtWindows::with_custom_titlebar`].
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TitlebarLayout {
+    /// Height of the title bar band at the top of the client area, in physical pixels.
+    pub height: i32,
+    /// Caption buttons, hit-tested as the corresponding `HT*` codes.
+    pub caption_buttons: Vec<(CaptionButton, TitlebarRect)>,
+    /// Regions in the band that the application handles as client area (e.g. tabs).
+    pub client_rects: Vec<TitlebarRect>,
 }
 
 /// A wrapper around a [`Window`] that ignores thread-specific window handle limitations.
@@ -317,6 +345,11 @@ pub trait WindowExtWindows {
     /// Not supported on Windows 7 and earlier.
     fn set_cloaked(&self, cloaked: bool);
 
+    /// Updates the hit-test regions of the title bar drawn by the application.
+    ///
+    /// Only meaningful for windows created with [`WindowAttributesExtWindows::with_custom_titlebar`].
+    fn set_titlebar_layout(&self, layout: TitlebarLayout);
+
     /// Get the raw window handle for this [`Window`] without checking for thread affinity.
     ///
     /// Window handles in Win32 have a property called "thread affinity" that ties them to their
@@ -434,6 +467,11 @@ impl WindowExtWindows for Window {
     #[inline]
     fn set_cloaked(&self, cloaked: bool) {
         self.window.set_cloaked(cloaked)
+    }
+
+    #[inline]
+    fn set_titlebar_layout(&self, layout: TitlebarLayout) {
+        self.window.set_titlebar_layout(layout)
     }
 
     unsafe fn window_handle_any_thread(
@@ -569,6 +607,16 @@ pub trait WindowAttributesExtWindows {
     ///
     /// Not supported on Windows 7 and earlier.
     fn with_cloaked(self, cloaked: bool) -> Self;
+
+    /// Removes the caption from a decorated window while keeping the rest of the OS frame
+    /// (resize borders, drop shadow, rounded corners), so that the application draws its own
+    /// title bar at the top of the client area.
+    ///
+    /// The application describes the title bar with [`WindowExtWindows::set_titlebar_layout`]:
+    /// the rest of the band drags the window, and the caption buttons behave like native ones
+    /// (including Snap Layouts) while their pointer state is reported through
+    /// [`WindowEvent::CaptionButtonsChanged`](crate::event::WindowEvent::CaptionButtonsChanged).
+    fn with_custom_titlebar(self, custom_titlebar: bool) -> Self;
 }
 
 impl WindowAttributesExtWindows for WindowAttributes {
@@ -660,6 +708,12 @@ impl WindowAttributesExtWindows for WindowAttributes {
     #[inline]
     fn with_cloaked(mut self, cloaked: bool) -> Self {
         self.platform_specific.cloaked = cloaked;
+        self
+    }
+
+    #[inline]
+    fn with_custom_titlebar(mut self, custom_titlebar: bool) -> Self {
+        self.platform_specific.custom_titlebar = custom_titlebar;
         self
     }
 }

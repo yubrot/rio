@@ -15,6 +15,13 @@ pub const DEFAULT_MINIMUM_WINDOW_WIDTH: i32 = 300;
 ))]
 pub const APPLICATION_ID: &str = "Rio";
 
+/// Whether Rio draws the title bar itself, in place of the OS caption.
+pub fn uses_custom_titlebar(config: &Config, quake: bool) -> bool {
+    cfg!(target_os = "windows")
+        && !quake
+        && config.window.decorations == Decorations::Transparent
+}
+
 pub fn create_window_builder(
     title: &str,
     config: &Config,
@@ -57,6 +64,11 @@ pub fn create_window_builder(
             {
                 use rio_window::platform::macos::WindowAttributesExtMacOS;
                 window_builder = window_builder.with_titlebar_transparent(true)
+            }
+            #[cfg(target_os = "windows")]
+            if uses_custom_titlebar(config, quake) {
+                use rio_window::platform::windows::WindowAttributesExtWindows;
+                window_builder = window_builder.with_custom_titlebar(true)
             }
         }
         Decorations::Buttonless => {

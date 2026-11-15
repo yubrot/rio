@@ -56,7 +56,7 @@ use crate::cursor::Cursor;
 use crate::dpi::{PhysicalPosition, PhysicalSize, Position, Size};
 use crate::error::{ExternalError, NotSupportedError, OsError as RootOsError};
 use crate::icon::Icon;
-use crate::platform::windows::{BackdropType, Color, CornerPreference};
+use crate::platform::windows::{BackdropType, Color, CornerPreference, TitlebarLayout};
 use crate::platform_impl::platform::dark_mode::try_theme;
 use crate::platform_impl::platform::definitions::{
     CLSID_TaskbarList, IID_ITaskbarList, IID_ITaskbarList2, ITaskbarList, ITaskbarList2,
@@ -1225,6 +1225,11 @@ impl Window {
     }
 
     #[inline]
+    pub fn set_titlebar_layout(&self, layout: TitlebarLayout) {
+        self.window_state_lock().titlebar = layout;
+    }
+
+    #[inline]
     pub fn set_cloaked(&self, cloaked: bool) {
         let cloaked = if cloaked { TRUE } else { FALSE };
         unsafe {
@@ -1482,6 +1487,10 @@ unsafe fn init(
     window_flags.set(
         WindowFlags::MARKER_UNDECORATED_SHADOW,
         attributes.platform_specific.decoration_shadow,
+    );
+    window_flags.set(
+        WindowFlags::MARKER_CUSTOM_TITLEBAR,
+        attributes.decorations && attributes.platform_specific.custom_titlebar,
     );
     window_flags.set(
         WindowFlags::ALWAYS_ON_TOP,

@@ -50,7 +50,7 @@ use crate::keyboard::{self, ModifiersKeyState, ModifiersKeys, ModifiersState};
 use crate::platform_impl;
 #[cfg(doc)]
 use crate::window::Window;
-use crate::window::{ActivationToken, Theme, WindowId};
+use crate::window::{ActivationToken, CaptionButton, Theme, WindowId};
 
 /// Describes a generic event.
 ///
@@ -441,6 +441,17 @@ pub enum WindowEvent {
     ///
     /// - **iOS / Android / X11 / Wayland / Orbital:** Unsupported.
     ThemeChanged(Theme),
+
+    /// The pointer state of the caption buttons of an application-drawn title bar has changed.
+    ///
+    /// ## Platform-specific
+    ///
+    /// - **Windows:** Emitted for windows created with `with_custom_titlebar`.
+    /// - **Others:** Unsupported.
+    CaptionButtonsChanged {
+        hovered: Option<CaptionButton>,
+        pressed: Option<CaptionButton>,
+    },
 
     /// The window has been occluded (completely hidden from view).
     ///
@@ -1151,6 +1162,10 @@ mod tests {
                     force: Some(event::Force::Normalized(0.0)),
                 }));
                 with_window_event(ThemeChanged(crate::window::Theme::Light));
+                with_window_event(CaptionButtonsChanged {
+                    hovered: None,
+                    pressed: None,
+                });
                 with_window_event(Occluded(true));
             }
 

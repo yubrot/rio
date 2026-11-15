@@ -127,6 +127,8 @@ pub struct ScreenWindowProperties {
     pub raw_window_handle: RawWindowHandle,
     pub raw_display_handle: RawDisplayHandle,
     pub window_id: rio_window::window::WindowId,
+    /// Set when Rio draws the title bar itself.
+    pub titlebar: Option<crate::renderer::titlebar::Titlebar>,
 }
 
 #[inline]
@@ -153,6 +155,10 @@ impl Screen<'_> {
             config.margin.top,
             1,
             config.window.macos_use_unified_titlebar,
+            window_properties
+                .titlebar
+                .as_ref()
+                .is_some_and(|t| t.is_shown()),
         );
 
         let padding_y_bottom = config.margin.bottom;
@@ -233,6 +239,9 @@ impl Screen<'_> {
         sugarloaf.update_filters(config.renderer.filters.as_slice());
 
         let mut renderer = Renderer::new(config);
+        if let Some(titlebar) = window_properties.titlebar {
+            renderer.enable_titlebar(titlebar);
+        }
 
         let bindings = crate::bindings::default_key_bindings(config);
 
@@ -522,6 +531,7 @@ impl Screen<'_> {
             config.margin.top,
             num_tabs,
             config.window.macos_use_unified_titlebar,
+            self.renderer.titlebar_shown(),
         );
         let padding_y_bottom = config.margin.bottom;
 
@@ -550,6 +560,7 @@ impl Screen<'_> {
 
         // Preserve existing Island (tab state) and update its colors
         let old_island = self.renderer.island.take();
+        let old_titlebar = self.renderer.titlebar.take();
         let was_focused = self.renderer.is_window_focused;
         self.renderer = Renderer::new(config);
         self.renderer.is_window_focused = was_focused;
@@ -557,6 +568,9 @@ impl Screen<'_> {
             island.update_colors(config.colors.tabs, config.colors.tabs_active);
             island.max_tab_width = config.navigation.max_tab_width;
             self.renderer.island = Some(island);
+        }
+        if let Some(titlebar) = old_titlebar {
+            self.renderer.enable_titlebar(titlebar);
         }
 
         let scale = self.sugarloaf.scale_factor();
@@ -1780,6 +1794,7 @@ impl Screen<'_> {
             self.renderer.margin.top,
             num_tabs,
             self.renderer.macos_use_unified_titlebar,
+            self.renderer.titlebar_shown(),
         );
         let padding_y_bottom = self.renderer.margin.bottom;
 
@@ -2829,10 +2844,107 @@ impl Screen<'_> {
             self.sugarloaf.scale_factor(),
             num_tabs,
             max_tab_width,
+            self.renderer
+                .titlebar
+                .as_ref()
+                .map_or(0.0, |t| t.reserved_right()),
         )
     }
 
-    #[cfg(target_os = "macos")]
+    /// Follows the window's maximized and fullscreen state; returns whether a redraw is due.
+    pub fn update_titlebar_state(&mut self, window: &rio_window::window::Window) -> bool {
+        let Some(titlebar) = self.renderer.titlebar.as_mut() else {
+            return false;
+        };
+        let was_shown = titlebar.is_shown();
+        let fullscreen = window.fullscreen().is_some();
+        let maximized = window.is_maximized();
+        if titlebar.fullscreen == fullscreen && titlebar.maximized == maximized {
+            return false;
+        }
+        titlebar.fullscreen = fullscreen;
+        titlebar.maximized = maximized;
+        if titlebar.is_shown() != was_shown {
+            let num_tabs = self.ctx().len();
+            self.resize_top_or_bottom_line(num_tabs);
+        }
+        self.mark_dirty();
+        true
+    }
+
+    /// Returns whether a redraw is due.
+    pub fn set_caption_buttons(
+        &mut self,
+        hovered: Option<rio_window::window::CaptionButton>,
+        pressed: Option<rio_window::window::CaptionButton>,
+    ) -> bool {
+        let Some(titlebar) = self.renderer.titlebar.as_mut() else {
+            return false;
+        };
+        if titlebar.hovered == hovered && titlebar.pressed == pressed {
+            return false;
+        }
+        titlebar.hovered = hovered;
+        titlebar.pressed = pressed;
+        self.mark_dirty();
+        true
+    }
+
+    /// Hit-test regions of the title bar Rio draws, in physical px.
+    #[cfg(target_os = "windows")]
+    pub fn titlebar_layout(&self) -> Option<rio_window::platform::windows::TitlebarLayout> {
+        use rio_window::platform::windows::{TitlebarLayout, TitlebarRect};
+
+        let titlebar = self.renderer.titlebar.as_ref()?;
+        if !titlebar.is_shown() {
+            return Some(TitlebarLayout::default());
+        }
+        let scale = self.sugarloaf.scale_factor();
+        let width = self.sugarloaf.window_size().width;
+        let px = |v: f32| (v * scale).round() as i32;
+        let height = px(ISLAND_HEIGHT);
+        let band = |left: f32, right: f32| TitlebarRect {
+            x: px(left),
+            y: 0,
+            width: px(right) - px(left),
+            height,
+        };
+
+        let caption_buttons: Vec<_> = titlebar
+            .buttons(width / scale)
+            .map(|(button, x)| {
+                let right = x + crate::renderer::titlebar::CAPTION_BUTTON_WIDTH;
+                (button, band(x, right))
+            })
+            .collect();
+
+        // Tabs are the app's; a lone tab's title spans the band and keeps its own clicks
+        // (color picker, drag), the rest of the band drags the window natively.
+        let num_tabs = self.context_manager.len();
+        let mut client_rects = Vec::new();
+        if self.renderer.navigation.island_visible(num_tabs) {
+            let layout = self.island_tab_layout(num_tabs);
+            if num_tabs == 1 {
+                let buttons_left = caption_buttons
+                    .first()
+                    .map_or(width / scale, |(_, rect)| rect.x as f32 / scale);
+                client_rects.push(band(layout.left_margin, buttons_left));
+            } else {
+                client_rects.push(band(
+                    layout.left_margin,
+                    layout.left_margin + layout.tabs_width,
+                ));
+            }
+        }
+
+        Some(TitlebarLayout {
+            height,
+            caption_buttons,
+            client_rects,
+        })
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub fn start_window_drag(&mut self, window: &rio_window::window::Window) {
         self.mouse.left_button_state = ElementState::Released;
         let _ = window.drag_window();
@@ -2858,6 +2970,11 @@ impl Screen<'_> {
         });
         #[cfg(target_os = "macos")]
         if self.allow_manual_dragging {
+            self.start_window_drag(window);
+        }
+        // Only the parts of the band the app hit-tests as client reach here.
+        #[cfg(target_os = "windows")]
+        if self.renderer.titlebar_shown() {
             self.start_window_drag(window);
         }
     }
@@ -2975,7 +3092,7 @@ impl Screen<'_> {
                 return true;
             }
 
-            if self.renderer.navigation.chrome_band_reserved(num_tabs) {
+            if self.renderer.chrome_band_reserved(num_tabs) {
                 // Same contract as the visible island's chrome regions:
                 // left starts a drag / validates a double-click, right
                 // is consumed without an action. Letting a right-click

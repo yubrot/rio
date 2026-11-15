@@ -10,7 +10,14 @@ pub fn padding_top_from_config(
     padding_y_top: f32,
     #[allow(unused)] num_tabs: usize,
     #[allow(unused)] macos_use_unified_titlebar: bool,
+    titlebar_shown: bool,
 ) -> f32 {
+    use crate::renderer::island::ISLAND_HEIGHT;
+    // A Rio-drawn title bar keeps its band whatever the navigation shows in it
+    if titlebar_shown {
+        return ISLAND_HEIGHT + padding_y_top;
+    }
+
     // When navigation is enabled (Tab mode), start content below island
     if navigation.is_enabled() {
         // On Linux/Windows, if hide_if_single is true and there's only one tab,
@@ -20,7 +27,6 @@ pub fn padding_top_from_config(
             return constants::PADDING_Y + padding_y_top;
         }
 
-        use crate::renderer::island::ISLAND_HEIGHT;
         return ISLAND_HEIGHT + padding_y_top;
     }
 

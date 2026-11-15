@@ -12,6 +12,7 @@ pub mod confirm_quit;
 pub mod custom_cursor;
 pub mod helpers;
 pub mod island;
+pub mod titlebar;
 pub mod scrollbar;
 pub mod search;
 pub mod trail_cursor;
@@ -160,6 +161,8 @@ pub struct Renderer {
     pub navigation: Navigation,
     pub margin: rio_backend::config::layout::Margin,
     pub island: Option<island::Island>,
+    /// Set when Rio draws the title bar itself, see `titlebar`.
+    pub titlebar: Option<titlebar::Titlebar>,
     pub command_palette: command_palette::CommandPalette,
     unfocused_split_opacity: f32,
     unfocused_split_fill: Option<ColorArray>,
@@ -254,6 +257,7 @@ impl Renderer {
             navigation: config.navigation.clone(),
             margin: config.margin,
             island,
+            titlebar: None,
             command_palette: {
                 let mut palette = command_palette::CommandPalette::new();
                 palette.has_adaptive_theme = config.adaptive_colors.is_some();
@@ -283,6 +287,33 @@ impl Renderer {
                 start_threshold: config.effects.trail_cursor_start_threshold as f32,
             }),
         }
+    }
+
+    /// Makes Rio draw the title bar. Plain navigation gets a title-only strip for the title.
+    pub fn enable_titlebar(&mut self, titlebar: titlebar::Titlebar) {
+        self.titlebar = Some(titlebar);
+        let island = self.island.get_or_insert_with(|| {
+            island::Island::new(
+                self.named_colors.tabs,
+                self.named_colors.tabs_active,
+                false,
+                self.navigation.max_tab_width,
+            )
+        });
+        island.title_only = !self.navigation.is_enabled();
+    }
+
+    /// Whether Rio draws the title bar this frame (not in fullscreen).
+    #[inline]
+    pub fn titlebar_shown(&self) -> bool {
+        self.titlebar.as_ref().is_some_and(|t| t.is_shown())
+    }
+
+    /// Whether the top band is custom window chrome this frame; see
+    /// `Navigation::chrome_band_reserved`.
+    #[inline]
+    pub fn chrome_band_reserved(&self, num_tabs: usize) -> bool {
+        self.titlebar_shown() || self.navigation.chrome_band_reserved(num_tabs)
     }
 
     #[inline]
@@ -754,16 +785,27 @@ impl Renderer {
             }
         }
 
+        let island_bg = self
+            .last_window_bg
+            .map(|c| [c.r as f32, c.g as f32, c.b as f32, c.a as f32])
+            .unwrap_or(self.named_colors.background.0);
         if let Some(island) = &mut self.island {
-            let island_bg = self
-                .last_window_bg
-                .map(|c| [c.r as f32, c.g as f32, c.b as f32, c.a as f32])
-                .unwrap_or(self.named_colors.background.0);
+            island.reserved_right =
+                self.titlebar.as_ref().map_or(0.0, |t| t.reserved_right());
             island.render(
                 sugarloaf,
                 (window_size.width, window_size.height, scale_factor),
                 context_manager,
                 island_bg,
+            );
+        }
+        if let Some(titlebar) = &self.titlebar {
+            titlebar.render(
+                sugarloaf,
+                window_size.width,
+                scale_factor,
+                island_bg,
+                self.is_window_focused,
             );
         }
 
