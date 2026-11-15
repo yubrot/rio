@@ -26,7 +26,7 @@ const PROGRESS_BOUNCE_MS: u128 = 1200;
 const PROGRESS_BOUNCE_LEN: f32 = 25.0;
 /// How long the bar takes to ease into a new length or position.
 const PROGRESS_EASE_SECS: f32 = 0.2;
-const TITLE_FONT_SIZE: f32 = 12.0;
+const TITLE_FONT_SIZE: f32 = 14.0;
 
 const TAB_PADDING_X: f32 = 27.0;
 const TAB_GAP: f32 = 6.0;
