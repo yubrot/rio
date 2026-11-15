@@ -21,3 +21,8 @@ Tools are managed by mise (`mise.toml`). Windows builds are cross-compiled from 
 - `mise run check:windows`: clippy for the Windows target
 
 Rio for Windows reads `%LOCALAPPDATA%\rio\config.toml`.
+
+## Workflow
+
+- Commit directly to the `yubrot-fork` branch; no feature branches or PRs.
+- Running `mise run install:windows` to try out a build is fine at any time.
