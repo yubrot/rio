@@ -5,6 +5,9 @@ use std::{ffi::c_void, ptr};
 use crate::utils::Lazy;
 use windows_sys::core::PCSTR;
 use windows_sys::Win32::Foundation::{BOOL, HWND, NTSTATUS, S_OK};
+use windows_sys::Win32::Graphics::Dwm::{
+    DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE,
+};
 use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
 use windows_sys::Win32::System::SystemInformation::OSVERSIONINFOW;
 use windows_sys::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTA};
@@ -79,6 +82,17 @@ pub fn try_theme(hwnd: HWND, preferred_theme: Option<Theme>) -> Theme {
 
         let status = unsafe { SetWindowTheme(hwnd, theme_name, ptr::null()) };
 
+        // Windows 11 tints the caption, the frame and the system backdrop from this attribute.
+        let dark = BOOL::from(is_dark_mode);
+        unsafe {
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
+                &dark as *const BOOL as *const _,
+                std::mem::size_of::<BOOL>() as u32,
+            )
+        };
+
         if status == S_OK && set_dark_mode_for_window(hwnd, is_dark_mode) {
             return theme;
         }
@@ -146,7 +160,7 @@ fn should_apps_use_dark_mode() -> bool {
                 return None;
             }
 
-            let module = LoadLibraryA("uxtheme.dll\0".as_ptr());
+            let module = LoadLibraryA(c"uxtheme.dll".as_ptr().cast());
 
             if module.is_null() {
                 return None;

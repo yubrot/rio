@@ -1071,7 +1071,11 @@ impl Window {
 
     #[inline]
     pub fn set_theme(&self, theme: Option<Theme>) {
-        try_theme(self.window.hwnd(), theme);
+        let current_theme = try_theme(self.window.hwnd(), theme);
+        let mut window_state = self.window_state_lock();
+        // Keep WM_SETTINGCHANGE from reverting to the theme given at creation.
+        window_state.preferred_theme = theme;
+        window_state.current_theme = current_theme;
     }
 
     #[inline]

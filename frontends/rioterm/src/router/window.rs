@@ -148,6 +148,8 @@ pub fn create_window_builder(
         // On windows cloak (hide) the window initially, we later reveal it after the first draw.
         // This is a workaround to hide the "white flash" that occurs during application startup.
         window_builder = window_builder.with_cloaked(true);
+        window_builder =
+            window_builder.with_theme(config.force_theme.map(|t| t.to_window_theme()));
     }
 
     // The quake window ignores `window.mode`: a fullscreen or
@@ -268,6 +270,13 @@ pub fn configure_window(winit_window: &Window, config: &Config) {
 
             winit_window.set_corner_preference(preference);
         }
+
+        // Chrome and backdrop follow `force-theme` (or the system theme when unset).
+        winit_window.set_theme(config.force_theme.map(|t| t.to_window_theme()));
+        let bg_color = config.colors.background.1;
+        winit_window.set_title_bar_background_color(
+            bg_color.r, bg_color.g, bg_color.b, bg_color.a,
+        );
     }
     if let Some(title) = &config.title.placeholder {
         winit_window.set_title(title);

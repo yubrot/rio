@@ -1,21 +1,6 @@
 # PLAN
 
-## 1. Consistent colors under `force-theme`
-
-`force-theme` only picks between `adaptive-colors`; the native window keeps following the system app mode. With Windows apps in light mode and `force-theme = "dark"`:
-
-- The Acrylic backdrop (`blur = true`, `DWMSBT_TRANSIENTWINDOW`) gets a light tint, so lowering `opacity` washes the background out to white.
-- The title bar and frame stay light.
-- The title bar color matches the terminal background only after it changes via OSC, not at startup (upstream rio#1446).
-
-Goal: the window chrome, the backdrop and the terminal colors all follow the effective theme (`force-theme`, or the system theme when unset), at startup and on `ToggleAppearanceTheme`.
-
-Notes:
-
-- `rio-window` already has `Window::set_theme` / `WindowAttributes::with_theme` (Windows: `dark_mode::try_theme`), but `frontends/rioterm` never calls them.
-- The Windows title bar color is set in `application.rs` on `WindowUpdate::Background` only.
-
-## 2. OS-integrated title bar and frame on Windows, with tabs
+## 1. OS-integrated title bar and frame on Windows, with tabs
 
 Today Windows offers either the native title bar (`decorations = "Enabled"`) or none at all (`"Disabled"`, which also loses mouse move and resize). Support a style where:
 
