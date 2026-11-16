@@ -128,6 +128,11 @@ See `sugarloaf/src/effects/prelude.wgsl` for the exact declarations.
   `max-fps`, even when the terminal is idle and the window is unfocused. A
   shader returning its input unchanged still costs a full pass, so idle
   windows with effects use some GPU and power.
+- Cost, measured on Windows (wgpu) at 60 fps with an idle terminal: about 5–9%
+  of one CPU core and well under 1 ms of GPU time per frame, even for a
+  maximized 4K window with a three-pass chain. Each panel keeps about 28
+  bytes per pixel of intermediate textures (more than 200 MB for a full 4K
+  panel), released when effects are disabled.
 - Rendering pauses for minimized windows (and occluded ones on macOS) and for
   inactive tabs. The clock keeps running, so compare event times with
   `rio_frame.time` instead of counting frames.
