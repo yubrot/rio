@@ -192,11 +192,12 @@ Porting a shader still requires WGSL translation and input/color/coordinate mapp
    - Verify WGSL-to-MSL translation, event/uniform layouts, named parameter reflection/packing, alpha, sRGB/DisplayP3, transparent windows, neighborhood sampling, and panel boundaries. Confirm focus/theme uniforms update correctly.
    - Freeze the ABI and insertion points only after both backends work.
    - Status: ABI v1 is frozen as group 0 = `rio_frame` (incl. `focused`/`focus_time`), `rio_input`, `rio_original`, `rio_sampler`, `rio_theme`. Later milestones only append (new `rio_*` bindings, `@group(1)` params, new trailing fields), so v1 shaders keep working. Event layouts and parameter packing are defined in M2–M4 under that rule. Metal runs of focus/theme uniforms are pending a Mac check.
-2. [ ] **Configuration, loader, parameters, and recovery**
+2. [x] **Configuration, loader, parameters, and recovery**
    - Extend `config/effects.rs`, including platform-specific overrides.
    - Add shared models, validation, parameter packing, and backend pipelines under a module such as `sugarloaf/src/effects/`.
    - Implement startup/configuration loading, watches, and preservation of the last valid state.
    - Complete when saving shader code or named values updates the same running process, invalid parameters produce useful errors, and fixing errors restores operation.
+   - Status: a loader thread reads, validates, and packs shaders, watching their parent directories (debounced); windows install the latest chain on a `CustomEffectsChanged` event, reusing pipelines whose WGSL is unchanged. Errors go to the log and a non-modal warning toast, cleared on recovery. File watching does not see changes under `\\wsl.localhost` paths from Windows. Device-loss recovery is not handled yet.
 3. [ ] **Continuous execution and cursor history**
    - Add per-panel frontend state and supply actual cursor geometry/history.
    - Create external `cursor-trail.wgsl` with configurable width, fading, and color.

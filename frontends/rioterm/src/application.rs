@@ -39,6 +39,7 @@ pub struct Application<'a> {
     /// everything else arrives via OSC 0/2 and OSC 7).
     title_tracks_size: bool,
     event_proxy: EventProxy,
+    effect_loader: crate::custom_effects::EffectLoader,
     router: Router<'a>,
     scheduler: Scheduler,
     app_id: Option<String>,
@@ -107,6 +108,12 @@ impl Application<'_> {
             rio_backend::config::config_dir_path(),
             event_proxy.clone(),
         );
+        let effect_loader =
+            crate::custom_effects::EffectLoader::spawn(event_proxy.clone());
+        effect_loader.configure(
+            &config.effects.custom,
+            rio_backend::config::config_dir_path(),
+        );
         let scheduler = Scheduler::new(proxy);
         event_loop.listen_device_events(DeviceEvents::Never);
 
@@ -120,6 +127,7 @@ impl Application<'_> {
             config,
             overrides,
             event_proxy,
+            effect_loader,
             router,
             scheduler,
             app_id,
@@ -692,6 +700,15 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     );
                 }
             }
+            RioEventType::Rio(RioEvent::CustomEffectsChanged) => {
+                for route in self.router.routes.values_mut() {
+                    let errors = crate::custom_effects::install_latest(
+                        &mut route.window.screen.sugarloaf,
+                    );
+                    route.show_custom_effect_errors(&errors);
+                    route.request_redraw();
+                }
+            }
             RioEventType::Rio(RioEvent::ReportToAssistant(error)) => {
                 if let Some(route) = self.router.routes.get_mut(&window_id) {
                     route.report_error(&error);
@@ -722,6 +739,10 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
 
                 self.config = config;
                 self.title_tracks_size = title_tracks_size(&self.config);
+                self.effect_loader.configure(
+                    &self.config.effects.custom,
+                    rio_backend::config::config_dir_path(),
+                );
 
                 // Dropping the old manager unregisters its hotkeys, so
                 // ToggleQuake binding edits apply without restarting.

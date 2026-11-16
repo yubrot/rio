@@ -43,6 +43,103 @@ pub struct ValidatedEffect {
     pub wgsl: String,
     pub module: naga::Module,
     pub info: naga::valid::ModuleInfo,
+    /// The shader's `@group(1) @binding(0)` parameter struct, if any.
+    pub params: Option<ParamsLayout>,
+}
+
+/// Upper bounds on a shader's parameter struct.
+pub const MAX_PARAMS: usize = 32;
+pub const MAX_PARAMS_SIZE: u32 = 1024;
+
+/// Reflected layout of a shader-defined parameter struct.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParamsLayout {
+    /// Struct size in bytes.
+    pub size: u32,
+    pub members: Vec<ParamMember>,
+}
+
+/// One `f32` / `vecN<f32>` member of a parameter struct.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParamMember {
+    pub name: String,
+    pub offset: u32,
+    /// 1 for `f32`, N for `vecN<f32>`.
+    pub components: u32,
+}
+
+/// A configured parameter value.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParamValue {
+    Number(f64),
+    Vector(Vec<f64>),
+}
+
+impl ValidatedEffect {
+    /// Pack `values` by member name into the reflected uniform layout.
+    /// Every member must be given; unknown names are rejected.
+    pub fn pack_params(
+        &self,
+        values: &[(String, ParamValue)],
+    ) -> Result<Vec<u8>, String> {
+        let Some(layout) = &self.params else {
+            return match values.first() {
+                Some((key, _)) => Err(format!(
+                    "unknown parameter `{key}`: the shader declares no parameters"
+                )),
+                None => Ok(Vec::new()),
+            };
+        };
+        for (key, _) in values {
+            if !layout.members.iter().any(|m| &m.name == key) {
+                return Err(format!("unknown parameter `{key}`"));
+            }
+        }
+        let mut bytes = vec![0u8; layout.size.next_multiple_of(16) as usize];
+        for member in &layout.members {
+            let name = &member.name;
+            let value = values
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, v)| v)
+                .ok_or_else(|| format!("missing parameter `{name}`"))?;
+            let numbers: &[f64] = match value {
+                ParamValue::Number(n) if member.components == 1 => {
+                    std::slice::from_ref(n)
+                }
+                ParamValue::Vector(v)
+                    if member.components > 1 && v.len() == member.components as usize =>
+                {
+                    v
+                }
+                _ if member.components == 1 => {
+                    return Err(format!("parameter `{name}` must be a number"))
+                }
+                _ => {
+                    return Err(format!(
+                        "parameter `{name}` must be an array of {} numbers",
+                        member.components
+                    ))
+                }
+            };
+            for (i, n) in numbers.iter().enumerate() {
+                let v = *n as f32;
+                if !v.is_finite() {
+                    return Err(format!("parameter `{name}` is out of range: {n}"));
+                }
+                let at = member.offset as usize + i * 4;
+                bytes[at..at + 4].copy_from_slice(&v.to_ne_bytes());
+            }
+        }
+        Ok(bytes)
+    }
+}
+
+/// A validated shader with its packed parameters, ready to install.
+#[derive(Debug, Clone)]
+pub struct EffectPass {
+    pub effect: std::sync::Arc<ValidatedEffect>,
+    pub params: Vec<u8>,
 }
 
 /// Per-panel data exposed to shaders as `rio_frame`.
@@ -51,7 +148,7 @@ pub struct ValidatedEffect {
 pub struct EffectFrameUniform {
     /// Panel size in physical pixels.
     pub resolution: [f32; 2],
-    /// Seconds since the chain was installed.
+    /// Seconds since effects started in this window; continues across reloads.
     pub time: f32,
     /// Seconds since the previous rendered frame.
     pub time_delta: f32,
@@ -159,6 +256,10 @@ pub(crate) const UNIFORM_BINDINGS: [u32; 2] = [0, 4];
 #[cfg(any(feature = "wgpu", test))]
 pub(crate) const UNIFORM_SIZES: [usize; 2] =
     [std::mem::size_of::<EffectFrameUniform>(), THEME_SIZE];
+
+/// Metal buffer slot of the `@group(1)` parameter struct.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const PARAMS_SLOT: usize = UNIFORM_BINDINGS.len();
 
 /// Per-panel uniform data for one frame.
 pub(crate) struct PanelUniforms {
@@ -341,7 +442,7 @@ pub fn validate(effect: &EffectSource) -> Result<ValidatedEffect, String> {
     let module = naga::front::wgsl::parse_str(&wgsl)
         .map_err(|e| e.emit_to_string_with_path(&wgsl, name))?;
 
-    check_abi(&module).map_err(|e| format!("{name}: {e}"))?;
+    let params = check_abi(&module).map_err(|e| format!("{name}: {e}"))?;
 
     let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
         .validate(&module)
@@ -352,10 +453,11 @@ pub fn validate(effect: &EffectSource) -> Result<ValidatedEffect, String> {
         wgsl,
         module,
         info,
+        params,
     })
 }
 
-fn check_abi(module: &naga::Module) -> Result<(), String> {
+fn check_abi(module: &naga::Module) -> Result<Option<ParamsLayout>, String> {
     let effect_main = module
         .functions
         .iter()
@@ -387,21 +489,72 @@ fn check_abi(module: &naga::Module) -> Result<(), String> {
         }
     }
 
+    let mut params = None;
     for (_, var) in module.global_variables.iter() {
         let Some(binding) = &var.binding else {
             continue;
         };
-        let host = var.name.as_deref().is_some_and(|n| n.starts_with("rio_"));
-        if !host || binding.group != 0 {
-            return Err(format!(
-                "resource binding `{}` (@group({}) @binding({})) is not supported",
-                var.name.as_deref().unwrap_or("?"),
-                binding.group,
-                binding.binding
-            ));
+        let var_name = var.name.as_deref().unwrap_or("?");
+        let host = var_name.starts_with("rio_");
+        if host && binding.group == 0 {
+            continue;
         }
+        if !host
+            && binding.group == 1
+            && binding.binding == 0
+            && var.space == naga::AddressSpace::Uniform
+        {
+            params = Some(params_layout(module, var.ty)?);
+            continue;
+        }
+        return Err(format!(
+            "resource binding `{var_name}` (@group({}) @binding({})) is not supported; \
+             parameters go in `@group(1) @binding(0) var<uniform>`",
+            binding.group, binding.binding
+        ));
     }
-    Ok(())
+    Ok(params)
+}
+
+fn params_layout(
+    module: &naga::Module,
+    ty: naga::Handle<naga::Type>,
+) -> Result<ParamsLayout, String> {
+    let naga::TypeInner::Struct { members, span } = &module.types[ty].inner else {
+        return Err("the parameter binding must be a struct".into());
+    };
+    if members.len() > MAX_PARAMS || *span > MAX_PARAMS_SIZE {
+        return Err(format!(
+            "parameter structs are limited to {MAX_PARAMS} members and {MAX_PARAMS_SIZE} bytes"
+        ));
+    }
+    let members = members
+        .iter()
+        .map(|m| {
+            let name = m.name.clone().unwrap_or_default();
+            let components = match module.types[m.ty].inner {
+                naga::TypeInner::Scalar(naga::Scalar::F32) => 1,
+                naga::TypeInner::Vector {
+                    size,
+                    scalar: naga::Scalar::F32,
+                } => size as u32,
+                _ => {
+                    return Err(format!(
+                        "parameter `{name}` must be `f32` or `vecN<f32>`"
+                    ))
+                }
+            };
+            Ok(ParamMember {
+                name,
+                offset: m.offset,
+                components,
+            })
+        })
+        .collect::<Result<_, String>>()?;
+    Ok(ParamsLayout {
+        size: *span,
+        members,
+    })
 }
 
 #[cfg(test)]
@@ -470,6 +623,84 @@ fn effect_main(pos: vec2<f32>) -> vec4<f32> {
         )))
         .unwrap_err();
         assert!(err.contains("entry point"), "{err}");
+    }
+
+    const PARAMS: &str = r#"
+struct EffectParams {
+    color: vec4<f32>,
+    opacity: f32,
+    offset: vec2<f32>,
+}
+@group(1) @binding(0) var<uniform> params: EffectParams;
+fn effect_main(pos: vec2<f32>) -> vec4<f32> {
+    return params.color * params.opacity + vec4<f32>(params.offset, 0.0, 0.0);
+}
+"#;
+
+    fn values(pairs: &[(&str, ParamValue)]) -> Vec<(String, ParamValue)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn params_are_reflected_and_packed_by_name() {
+        let effect = validate(&src(PARAMS)).unwrap();
+        let layout = effect.params.as_ref().unwrap();
+        let offsets: Vec<_> = layout
+            .members
+            .iter()
+            .map(|m| (m.offset, m.components))
+            .collect();
+        assert_eq!(offsets, [(0, 4), (16, 1), (24, 2)]);
+        // Configuration order does not matter.
+        let bytes = effect
+            .pack_params(&values(&[
+                ("offset", ParamValue::Vector(vec![5.0, 6.0])),
+                ("opacity", ParamValue::Number(0.5)),
+                ("color", ParamValue::Vector(vec![1.0, 2.0, 3.0, 4.0])),
+            ]))
+            .unwrap();
+        let floats: &[f32] = bytemuck::cast_slice(&bytes);
+        assert_eq!(floats, [1.0, 2.0, 3.0, 4.0, 0.5, 0.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn bad_params_are_rejected() {
+        let effect = validate(&src(PARAMS)).unwrap();
+        let ok = [
+            ("color", ParamValue::Vector(vec![0.0; 4])),
+            ("opacity", ParamValue::Number(1.0)),
+            ("offset", ParamValue::Vector(vec![0.0; 2])),
+        ];
+        let err = |pairs: &[(&str, ParamValue)]| {
+            effect.pack_params(&values(pairs)).unwrap_err()
+        };
+        assert!(err(&ok[..2]).contains("missing parameter `offset`"));
+        let mut extra = ok.to_vec();
+        extra.push(("width", ParamValue::Number(1.0)));
+        assert!(err(&extra).contains("unknown parameter `width`"));
+        let mut wrong = ok.to_vec();
+        wrong[1].1 = ParamValue::Vector(vec![1.0]);
+        assert!(err(&wrong).contains("must be a number"));
+        wrong = ok.to_vec();
+        wrong[0].1 = ParamValue::Vector(vec![1.0; 3]);
+        assert!(err(&wrong).contains("4 numbers"));
+        wrong = ok.to_vec();
+        wrong[1].1 = ParamValue::Number(1e300);
+        assert!(err(&wrong).contains("out of range"));
+
+        let plain = validate(&src(IDENTITY)).unwrap();
+        assert!(plain.pack_params(&[]).unwrap().is_empty());
+        assert!(plain.pack_params(&values(&ok[..1])).is_err());
+    }
+
+    #[test]
+    fn unsupported_param_types_are_rejected() {
+        let err =
+            validate(&src(&PARAMS.replace("opacity: f32", "opacity: u32"))).unwrap_err();
+        assert!(err.contains("`opacity` must be"), "{err}");
     }
 
     #[test]

@@ -477,61 +477,46 @@ impl Sugarloaf<'_> {
     }
 
     /// Install the custom effect chain, replacing the previous one.
-    /// Shaders that fail validation are skipped; the returned errors
-    /// describe each failure. An empty `sources` disables effects.
+    /// Pipelines of unchanged shaders are reused; passes the GPU backend
+    /// rejects are skipped and described in the returned errors. An empty
+    /// `passes` disables effects.
     #[cfg_attr(
         not(any(feature = "wgpu", target_os = "macos")),
         allow(unused_variables)
     )]
-    pub fn set_effects(
-        &mut self,
-        sources: &[crate::effects::EffectSource],
-    ) -> Vec<String> {
-        use crate::effects::{validate, MAX_PASSES};
+    pub fn set_effects(&mut self, passes: &[crate::effects::EffectPass]) -> Vec<String> {
         let mut errors = Vec::new();
-        if sources.len() > MAX_PASSES {
-            errors.push(format!(
-                "at most {MAX_PASSES} effect shaders are supported; ignoring the rest"
-            ));
-        }
-        let valid: Vec<_> = sources
-            .iter()
-            .take(MAX_PASSES)
-            .filter_map(|s| validate(s).map_err(|e| errors.push(e)).ok())
-            .collect();
-        self.effect_host = crate::effects::EffectHost::default();
+        let passes = &passes[..passes.len().min(crate::effects::MAX_PASSES)];
         match &self.ctx.inner {
             #[cfg(feature = "wgpu")]
             crate::context::ContextType::Wgpu(ctx) => {
-                if valid.is_empty() {
+                if passes.is_empty() {
                     self.wgpu_effects = None;
                 } else {
                     let fx = self.wgpu_effects.get_or_insert_with(|| {
                         crate::effects::webgpu::WgpuEffects::new(ctx)
                     });
-                    errors.extend(fx.set_passes(ctx, &valid));
-                    if !fx.is_active() {
-                        self.wgpu_effects = None;
-                    }
+                    errors.extend(fx.set_passes(ctx, passes));
                 }
             }
             #[cfg(target_os = "macos")]
             crate::context::ContextType::Metal(ctx) => {
-                self.metal_effects = None;
-                if !valid.is_empty() {
-                    match crate::effects::metal::MetalEffects::new(&ctx.device) {
-                        Ok(mut fx) => {
-                            errors.extend(fx.set_passes(&ctx.device, &valid));
-                            if fx.is_active() {
-                                self.metal_effects = Some(fx);
-                            }
+                if passes.is_empty() {
+                    self.metal_effects = None;
+                } else {
+                    if self.metal_effects.is_none() {
+                        match crate::effects::metal::MetalEffects::new(&ctx.device) {
+                            Ok(fx) => self.metal_effects = Some(fx),
+                            Err(e) => errors.push(format!("effect host passes: {e}")),
                         }
-                        Err(e) => errors.push(format!("effect host passes: {e}")),
+                    }
+                    if let Some(fx) = self.metal_effects.as_mut() {
+                        errors.extend(fx.set_passes(&ctx.device, passes));
                     }
                 }
             }
             _ => {
-                if !sources.is_empty() {
+                if !passes.is_empty() {
                     errors.push(
                         "custom effects are not supported by this renderer backend"
                             .into(),

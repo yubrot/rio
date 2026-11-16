@@ -30,6 +30,29 @@ pub struct PlatformConfig {
     pub env_vars: Option<Vec<String>>,
     #[serde(default = "Option::default")]
     pub theme: Option<String>,
+    #[serde(default = "Option::default")]
+    pub effects: Option<PlatformEffects>,
+}
+
+/// Platform-specific `[effects]` overrides.
+#[derive(Default, Debug, Serialize, Deserialize, PartialEq, Clone)]
+pub struct PlatformEffects {
+    #[serde(default = "Option::default")]
+    pub custom: Option<PlatformCustomEffects>,
+}
+
+/// Platform-specific `[effects.custom]` overrides; `shaders` replaces
+/// the whole chain.
+#[derive(Default, Debug, Serialize, Deserialize, PartialEq, Clone)]
+pub struct PlatformCustomEffects {
+    #[serde(default = "Option::default")]
+    pub enabled: Option<bool>,
+    #[serde(default = "Option::default", rename = "hot-reload")]
+    pub hot_reload: Option<bool>,
+    #[serde(default = "Option::default", rename = "max-fps")]
+    pub max_fps: Option<u32>,
+    #[serde(default = "Option::default")]
+    pub shaders: Option<Vec<crate::config::effects::CustomShader>>,
 }
 
 /// Platform-specific window config with optional fields for selective override

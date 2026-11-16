@@ -31,13 +31,30 @@ pub struct Effects {
 }
 
 /// `[effects.custom]`: user-provided WGSL passes applied to each panel.
-#[derive(Debug, Default, PartialEq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct CustomEffects {
     #[serde(default)]
     pub enabled: bool,
+    /// Reload shader files when they change on disk.
+    #[serde(default = "default_hot_reload", rename = "hot-reload")]
+    pub hot_reload: bool,
+    /// Frame rate cap for continuously running chains; see [`Self::max_fps`].
+    #[serde(default = "default_max_fps", rename = "max-fps")]
+    pub max_fps: u32,
     /// Passes in execution order.
     #[serde(default)]
     pub shaders: Vec<CustomShader>,
+}
+
+impl Default for CustomEffects {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            hot_reload: default_hot_reload(),
+            max_fps: default_max_fps(),
+            shaders: Vec::new(),
+        }
+    }
 }
 
 /// One `[[effects.custom.shaders]]` entry.
@@ -54,11 +71,28 @@ pub struct CustomShader {
     pub params: toml::Table,
 }
 
+/// Accepted range of `max-fps`.
+pub const MAX_FPS_RANGE: std::ops::RangeInclusive<u32> = 1..=240;
+
 impl CustomEffects {
     /// Whether any pass should run.
     pub fn is_active(&self) -> bool {
         self.enabled && !self.shaders.is_empty()
     }
+
+    /// `max-fps` clamped to [`MAX_FPS_RANGE`].
+    pub fn max_fps(&self) -> u32 {
+        self.max_fps
+            .clamp(*MAX_FPS_RANGE.start(), *MAX_FPS_RANGE.end())
+    }
+}
+
+fn default_hot_reload() -> bool {
+    true
+}
+
+fn default_max_fps() -> u32 {
+    60
 }
 
 fn default_trail_opacity() -> f32 {
@@ -153,5 +187,15 @@ mod tests {
     fn custom_is_inactive_by_default() {
         let effects: Effects = toml::from_str("").unwrap();
         assert!(!effects.custom.is_active());
+        assert!(effects.custom.hot_reload);
+        assert_eq!(effects.custom.max_fps(), 60);
+    }
+
+    #[test]
+    fn max_fps_is_clamped() {
+        let custom: CustomEffects = toml::from_str("max-fps = 0").unwrap();
+        assert_eq!(custom.max_fps(), 1);
+        let custom: CustomEffects = toml::from_str("max-fps = 1000").unwrap();
+        assert_eq!(custom.max_fps(), 240);
     }
 }

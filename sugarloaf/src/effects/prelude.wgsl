@@ -3,7 +3,7 @@
 struct RioEffectFrame {
     // Panel size in physical pixels.
     resolution: vec2<f32>,
-    // Seconds since the chain was installed.
+    // Seconds since effects started in this window; continues across reloads.
     time: f32,
     // Seconds since the previous rendered frame.
     time_delta: f32,

@@ -165,6 +165,27 @@ impl Route<'_> {
             .set_error(error.to_owned());
     }
 
+    /// Show `[effects.custom]` errors as a warning toast, or clear a
+    /// previous one once every shader loads.
+    pub fn show_custom_effect_errors(&mut self, errors: &[String]) {
+        if errors.is_empty() {
+            let showing = self
+                .assistant
+                .inner
+                .as_ref()
+                .is_some_and(|e| matches!(e.report, RioErrorType::CustomEffects(_)));
+            if showing {
+                self.assistant.clear();
+                self.window.screen.renderer.assistant.clear();
+            }
+            return;
+        }
+        self.report_error(&RioError {
+            report: RioErrorType::CustomEffects(errors.join("\n\n")),
+            level: RioErrorLevel::Warning,
+        });
+    }
+
     #[inline]
     pub fn clear_errors(&mut self) {
         self.assistant.clear();

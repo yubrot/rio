@@ -237,7 +237,8 @@ impl Screen<'_> {
 
         #[cfg(wgpu_backend)]
         sugarloaf.update_filters(config.renderer.filters.as_slice());
-        crate::custom_effects::apply(&mut sugarloaf, &config.effects.custom);
+        // Errors were already reported when the chain loaded.
+        let _ = crate::custom_effects::install_latest(&mut sugarloaf);
 
         let mut renderer = Renderer::new(config);
         if let Some(titlebar) = window_properties.titlebar {
@@ -554,7 +555,6 @@ impl Screen<'_> {
         #[cfg(wgpu_backend)]
         self.sugarloaf
             .update_filters(config.renderer.filters.as_slice());
-        crate::custom_effects::apply(&mut self.sugarloaf, &config.effects.custom);
 
         // Rebuild bindings so `[bindings]` edits live-reload like the
         // rest of the config instead of waiting for a new window.

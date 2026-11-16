@@ -2,7 +2,7 @@
 //! user passes → encode pipeline, and pipeline creation with error scopes.
 
 use super::{
-    HostPassUniform, PanelUniforms, SurfaceAlpha, ValidatedEffect, FRAGMENT_ENTRY,
+    EffectPass, HostPassUniform, PanelUniforms, SurfaceAlpha, FRAGMENT_ENTRY,
     UNIFORM_BINDINGS, UNIFORM_SIZES, VERTEX_ENTRY,
 };
 use crate::context::webgpu::WgpuContext;
@@ -13,13 +13,22 @@ use rustc_hash::FxHashMap;
 const CHAIN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 pub(crate) struct WgpuEffects {
-    passes: Vec<wgpu::RenderPipeline>,
+    passes: Vec<Pass>,
     effect_bgl: wgpu::BindGroupLayout,
+    params_bgl: wgpu::BindGroupLayout,
     host_bgl: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     decode: wgpu::RenderPipeline,
     encode: wgpu::RenderPipeline,
     panels: FxHashMap<usize, PanelTargets>,
+}
+
+struct Pass {
+    /// Source the pipeline was built from, to reuse it across reloads.
+    wgsl: String,
+    pipeline: wgpu::RenderPipeline,
+    /// `@group(1)`: the packed parameter struct.
+    params: wgpu::BindGroup,
 }
 
 struct PanelTargets {
@@ -84,6 +93,11 @@ impl WgpuEffects {
                 label: Some("effects::bgl"),
                 entries: &effect_entries,
             });
+        let params_bgl =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("effects::params_bgl"),
+                entries: &[uniform_entry(0)],
+            });
         let host_bgl =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("effects::host_bgl"),
@@ -129,6 +143,7 @@ impl WgpuEffects {
         Self {
             passes: Vec::new(),
             effect_bgl,
+            params_bgl,
             host_bgl,
             sampler,
             decode,
@@ -137,45 +152,82 @@ impl WgpuEffects {
         }
     }
 
-    /// Build pipelines for `effects`, skipping (and reporting) any that
-    /// wgpu rejects.
+    /// Build pipelines for `passes`, reusing those whose source is
+    /// unchanged and skipping (and reporting) any that wgpu rejects.
     pub fn set_passes(
         &mut self,
         ctx: &WgpuContext,
-        effects: &[ValidatedEffect],
+        passes: &[EffectPass],
     ) -> Vec<String> {
         let mut errors = Vec::new();
         let device = &ctx.device;
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("effects::layout"),
-            bind_group_layouts: &[Some(&self.effect_bgl)],
+            bind_group_layouts: &[Some(&self.effect_bgl), Some(&self.params_bgl)],
             immediate_size: 0,
         });
-        let mut passes = Vec::with_capacity(effects.len());
-        for effect in effects {
-            // wgpu reports these errors to the device error handler
-            // (a panic by default), so capture them in a scope.
-            let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(&effect.name),
-                source: wgpu::ShaderSource::Wgsl(effect.wgsl.as_str().into()),
+        let mut built = Vec::with_capacity(passes.len());
+        for pass in passes {
+            let effect = &pass.effect;
+            let cached = self
+                .passes
+                .iter()
+                .find(|p| p.wgsl == effect.wgsl)
+                .map(|p| p.pipeline.clone());
+            let pipeline = match cached {
+                Some(p) => p,
+                None => {
+                    // wgpu reports these errors to the device error handler
+                    // (a panic by default), so capture them in a scope.
+                    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+                    let module =
+                        device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                            label: Some(&effect.name),
+                            source: wgpu::ShaderSource::Wgsl(effect.wgsl.as_str().into()),
+                        });
+                    let pipeline = fullscreen_pipeline(
+                        device,
+                        &effect.name,
+                        &layout,
+                        &module,
+                        (VERTEX_ENTRY, FRAGMENT_ENTRY),
+                        CHAIN_FORMAT,
+                    );
+                    if let Some(err) = futures::executor::block_on(scope.pop()) {
+                        errors.push(format!("{}: {err}", effect.name));
+                        continue;
+                    }
+                    pipeline
+                }
+            };
+            // Shaders without parameters still get a (minimal) group 1.
+            let size = pass.params.len().max(16) as u64;
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("effects::params"),
+                size,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
             });
-            let pipeline = fullscreen_pipeline(
-                device,
-                &effect.name,
-                &layout,
-                &module,
-                (VERTEX_ENTRY, FRAGMENT_ENTRY),
-                CHAIN_FORMAT,
-            );
-            match futures::executor::block_on(scope.pop()) {
-                Some(err) => errors.push(format!("{}: {err}", effect.name)),
-                None => passes.push(pipeline),
-            }
+            ctx.queue.write_buffer(&buffer, 0, &pass.params);
+            let params = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("effects::params_bg"),
+                layout: &self.params_bgl,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffer.as_entire_binding(),
+                }],
+            });
+            built.push(Pass {
+                wgsl: effect.wgsl.clone(),
+                pipeline,
+                params,
+            });
         }
-        self.passes = passes;
-        // Pass bind groups depend on the pass count.
-        self.panels.clear();
+        // Panel targets and bind groups depend only on the pass count.
+        if built.len() != self.passes.len() {
+            self.panels.clear();
+        }
+        self.passes = built;
         errors
     }
 
@@ -251,15 +303,15 @@ impl WgpuEffects {
             "effects::decode",
             &t.original,
             &self.decode,
-            &t.decode_bg,
+            &[&t.decode_bg],
         );
-        for (i, pipeline) in self.passes.iter().enumerate() {
+        for (i, pass) in self.passes.iter().enumerate() {
             fullscreen_pass(
                 encoder,
                 "effects::pass",
                 &t.chain[i % 2],
-                pipeline,
-                &t.pass_bgs[i],
+                &pass.pipeline,
+                &[&t.pass_bgs[i], &pass.params],
             );
         }
     }
@@ -452,7 +504,7 @@ fn fullscreen_pass(
     label: &str,
     target: &wgpu::TextureView,
     pipeline: &wgpu::RenderPipeline,
-    bind_group: &wgpu::BindGroup,
+    bind_groups: &[&wgpu::BindGroup],
 ) {
     let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some(label),
@@ -471,6 +523,8 @@ fn fullscreen_pass(
         multiview_mask: None,
     });
     rpass.set_pipeline(pipeline);
-    rpass.set_bind_group(0, bind_group, &[]);
+    for (i, group) in bind_groups.iter().enumerate() {
+        rpass.set_bind_group(i as u32, *group, &[]);
+    }
     rpass.draw(0..3, 0..1);
 }

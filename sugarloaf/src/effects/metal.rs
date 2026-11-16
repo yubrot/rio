@@ -3,8 +3,8 @@
 
 use super::msl::{effect_resources, host_resources, to_msl, validator};
 use super::{
-    HostPassUniform, PanelUniforms, SurfaceAlpha, ValidatedEffect, FRAGMENT_ENTRY,
-    VERTEX_ENTRY,
+    EffectPass, HostPassUniform, PanelUniforms, SurfaceAlpha, FRAGMENT_ENTRY,
+    PARAMS_SLOT, VERTEX_ENTRY,
 };
 use metal::{
     Buffer, CommandBufferRef, CompileOptions, Device, MTLClearColor, MTLLoadAction,
@@ -22,11 +22,19 @@ const CHAIN_FORMAT: MTLPixelFormat = MTLPixelFormat::RGBA16Float;
 const SURFACE_FORMAT: MTLPixelFormat = MTLPixelFormat::BGRA8Unorm;
 
 pub(crate) struct MetalEffects {
-    passes: Vec<RenderPipelineState>,
+    passes: Vec<Pass>,
     decode: RenderPipelineState,
     encode: RenderPipelineState,
     sampler: SamplerState,
     panels: FxHashMap<usize, PanelTargets>,
+}
+
+struct Pass {
+    /// Source the pipeline was built from, to reuse it across reloads.
+    wgsl: String,
+    pipeline: RenderPipelineState,
+    /// The packed parameter struct (at most `MAX_PARAMS_SIZE` bytes).
+    params: Vec<u8>,
 }
 
 struct PanelTargets {
@@ -86,35 +94,48 @@ impl MetalEffects {
         })
     }
 
-    /// Build pipelines for `effects`, skipping (and reporting) any that
-    /// fail translation or Metal compilation.
-    pub fn set_passes(
-        &mut self,
-        device: &Device,
-        effects: &[ValidatedEffect],
-    ) -> Vec<String> {
+    /// Build pipelines for `passes`, reusing those whose source is
+    /// unchanged and skipping (and reporting) any that fail translation
+    /// or Metal compilation.
+    pub fn set_passes(&mut self, device: &Device, passes: &[EffectPass]) -> Vec<String> {
         let mut errors = Vec::new();
-        let mut passes = Vec::with_capacity(effects.len());
-        for effect in effects {
-            let built = to_msl(&effect.module, &effect.info, effect_resources())
-                .and_then(|(src, names)| {
-                    pipeline(
-                        device,
-                        &effect.name,
-                        &src,
-                        &names,
-                        VERTEX_ENTRY,
-                        FRAGMENT_ENTRY,
-                        CHAIN_FORMAT,
-                    )
-                });
-            match built {
-                Ok(p) => passes.push(p),
+        let mut built = Vec::with_capacity(passes.len());
+        for pass in passes {
+            let effect = &pass.effect;
+            let cached = self
+                .passes
+                .iter()
+                .find(|p| p.wgsl == effect.wgsl)
+                .map(|p| Ok(p.pipeline.clone()));
+            let pipeline = cached.unwrap_or_else(|| {
+                to_msl(&effect.module, &effect.info, effect_resources()).and_then(
+                    |(src, names)| {
+                        pipeline(
+                            device,
+                            &effect.name,
+                            &src,
+                            &names,
+                            VERTEX_ENTRY,
+                            FRAGMENT_ENTRY,
+                            CHAIN_FORMAT,
+                        )
+                    },
+                )
+            });
+            match pipeline {
+                Ok(pipeline) => built.push(Pass {
+                    wgsl: effect.wgsl.clone(),
+                    pipeline,
+                    params: pass.params.clone(),
+                }),
                 Err(e) => errors.push(format!("{}: {e}", effect.name)),
             }
         }
-        self.passes = passes;
-        self.panels.clear();
+        // Panel targets depend only on the pass count.
+        if built.len() != self.passes.len() {
+            self.panels.clear();
+        }
+        self.passes = built;
         errors
     }
 
@@ -190,7 +211,14 @@ impl MetalEffects {
                 &t.chain[(i - 1) % 2]
             };
             let enc = begin_pass(command_buffer, &t.chain[i % 2], "effects::pass");
-            enc.set_render_pipeline_state(pass);
+            enc.set_render_pipeline_state(&pass.pipeline);
+            if !pass.params.is_empty() {
+                enc.set_fragment_bytes(
+                    PARAMS_SLOT as u64,
+                    pass.params.len() as u64,
+                    pass.params.as_ptr() as *const std::ffi::c_void,
+                );
+            }
             for (slot, buffer) in t.uniforms.iter().enumerate() {
                 enc.set_fragment_buffer(slot as u64, Some(buffer), 0);
             }

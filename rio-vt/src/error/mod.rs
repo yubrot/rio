@@ -62,6 +62,9 @@ pub enum RioErrorType {
     // background image referenced in config could not be loaded
     BackgroundImageLoadFailure(String),
 
+    // `[effects.custom]` shaders failed to load
+    CustomEffects(String),
+
     // reports that are ignored by RioErrorType
     IgnoredReport,
 }
@@ -93,6 +96,9 @@ impl std::fmt::Display for RioErrorType {
             }
             RioErrorType::InvalidConfigurationTheme(message) => {
                 write!(f, "Found an issue in the configured theme:\n\n{message}")
+            }
+            RioErrorType::CustomEffects(message) => {
+                write!(f, "Custom effect shaders:\n\n{message}")
             }
             RioErrorType::BackgroundImageLoadFailure(message) => {
                 write!(

@@ -718,6 +718,23 @@ impl Config {
         if let Some(theme_overwrite) = &platform_config.theme {
             self.theme = theme_overwrite.clone();
         }
+
+        // Merge custom effect fields individually
+        if let Some(custom) = platform_config.effects.and_then(|e| e.custom) {
+            let target = &mut self.effects.custom;
+            if let Some(enabled) = custom.enabled {
+                target.enabled = enabled;
+            }
+            if let Some(hot_reload) = custom.hot_reload {
+                target.hot_reload = hot_reload;
+            }
+            if let Some(max_fps) = custom.max_fps {
+                target.max_fps = max_fps;
+            }
+            if let Some(shaders) = custom.shaders {
+                target.shaders = shaders;
+            }
+        }
     }
 }
 
@@ -1502,6 +1519,49 @@ mod tests {
         // describes how
         // input color bytes are *interpreted*, not the surface gamut.
         assert_eq!(result.window.colorspace, window::Colorspace::Srgb);
+    }
+
+    #[test]
+    fn test_platform_custom_effects_override() {
+        let mut result = create_temporary_config(
+            "platform-custom-effects",
+            r#"
+            [effects.custom]
+            enabled = true
+            max-fps = 30
+
+            [[effects.custom.shaders]]
+            path = "a.wgsl"
+
+            [platform.windows.effects.custom]
+            max-fps = 120
+            [[platform.windows.effects.custom.shaders]]
+            path = "win.wgsl"
+
+            [platform.macos.effects.custom]
+            max-fps = 120
+            [[platform.macos.effects.custom.shaders]]
+            path = "mac.wgsl"
+
+            [platform.linux.effects.custom]
+            max-fps = 120
+            [[platform.linux.effects.custom.shaders]]
+            path = "linux.wgsl"
+        "#,
+        );
+        result.overwrite_based_on_platform();
+        let custom = &result.effects.custom;
+        assert!(custom.enabled);
+        assert_eq!(custom.max_fps, 120);
+        let expected = if cfg!(windows) {
+            "win.wgsl"
+        } else if cfg!(target_os = "macos") {
+            "mac.wgsl"
+        } else {
+            "linux.wgsl"
+        };
+        assert_eq!(custom.shaders.len(), 1);
+        assert_eq!(custom.shaders[0].path, expected);
     }
 
     #[test]
