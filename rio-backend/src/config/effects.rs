@@ -25,6 +25,40 @@ pub struct Effects {
         rename = "trail-cursor-start-threshold"
     )]
     pub trail_cursor_start_threshold: u32,
+    /// External WGSL post-processing chain.
+    #[serde(default)]
+    pub custom: CustomEffects,
+}
+
+/// `[effects.custom]`: user-provided WGSL passes applied to each panel.
+#[derive(Debug, Default, PartialEq, Clone, Serialize, Deserialize)]
+pub struct CustomEffects {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Passes in execution order.
+    #[serde(default)]
+    pub shaders: Vec<CustomShader>,
+}
+
+/// One `[[effects.custom.shaders]]` entry.
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct CustomShader {
+    /// WGSL file; relative paths resolve against the config directory.
+    pub path: String,
+    /// Shader ABI the file targets. Checked when loading so a mismatch
+    /// disables only this shader instead of rejecting the whole config.
+    #[serde(default, rename = "api-version")]
+    pub api_version: Option<u32>,
+    /// Named values for the shader's `EffectParams` struct.
+    #[serde(default)]
+    pub params: toml::Table,
+}
+
+impl CustomEffects {
+    /// Whether any pass should run.
+    pub fn is_active(&self) -> bool {
+        self.enabled && !self.shaders.is_empty()
+    }
 }
 
 fn default_trail_opacity() -> f32 {
@@ -48,6 +82,7 @@ impl Default for Effects {
             trail_cursor_opacity: default_trail_opacity(),
             trail_cursor_decay: default_trail_decay(),
             trail_cursor_start_threshold: default_trail_start_threshold(),
+            custom: CustomEffects::default(),
         }
     }
 }
@@ -83,5 +118,40 @@ mod tests {
         assert_eq!(effects.trail_cursor_opacity, 0.4);
         assert_eq!(effects.trail_cursor_decay, [50, 250]);
         assert_eq!(effects.trail_cursor_start_threshold, 0);
+    }
+
+    #[test]
+    fn custom_shaders_parse() {
+        let effects: Effects = toml::from_str(
+            r##"
+            [custom]
+            enabled = true
+
+            [[custom.shaders]]
+            path = "effects/a.wgsl"
+            api-version = 1
+
+            [custom.shaders.params]
+            color = [1.0, 0.5, 0.0, 1.0]
+            width = 2.0
+
+            [[custom.shaders]]
+            path = "/abs/b.wgsl"
+            "##,
+        )
+        .unwrap();
+        let custom = &effects.custom;
+        assert!(custom.is_active());
+        assert_eq!(custom.shaders.len(), 2);
+        assert_eq!(custom.shaders[0].api_version, Some(1));
+        assert_eq!(custom.shaders[0].params["width"].as_float(), Some(2.0));
+        assert_eq!(custom.shaders[1].api_version, None);
+        assert!(custom.shaders[1].params.is_empty());
+    }
+
+    #[test]
+    fn custom_is_inactive_by_default() {
+        let effects: Effects = toml::from_str("").unwrap();
+        assert!(!effects.custom.is_active());
     }
 }

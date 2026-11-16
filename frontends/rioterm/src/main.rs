@@ -9,6 +9,7 @@ mod bindings;
 mod cli;
 mod constants;
 mod context;
+mod custom_effects;
 mod global_hotkey;
 mod hints;
 mod ime;

@@ -27,6 +27,13 @@ pub struct Sugarloaf<'a> {
     // BEFORE `ctx` — destroying handles after the device has been
     // torn down would crash the driver. `ctx` is therefore last.
     renderer: Renderer,
+    /// Custom effect chain (wgpu backend). Holds GPU handles, so it
+    /// stays ahead of `ctx`.
+    #[cfg(feature = "wgpu")]
+    wgpu_effects: Option<crate::effects::webgpu::WgpuEffects>,
+    #[cfg(target_os = "macos")]
+    metal_effects: Option<crate::effects::metal::MetalEffects>,
+    effect_clock: crate::effects::EffectClock,
     state: state::SugarState,
     /// Input colorspace configured at construction. Exposed via
     /// `input_colorspace()` so the grid renderer can feed the same
@@ -253,6 +260,11 @@ impl Sugarloaf<'_> {
             background_color: Some(Color::BLACK),
             background_image: None,
             renderer,
+            #[cfg(feature = "wgpu")]
+            wgpu_effects: None,
+            #[cfg(target_os = "macos")]
+            metal_effects: None,
+            effect_clock: crate::effects::EffectClock::default(),
             graphics: Graphics::default(),
             #[cfg(feature = "wgpu")]
             filters_brush: None,
@@ -462,6 +474,81 @@ impl Sugarloaf<'_> {
                 }
             }
         }
+    }
+
+    /// Install the custom effect chain, replacing the previous one.
+    /// Shaders that fail validation are skipped; the returned errors
+    /// describe each failure. An empty `sources` disables effects.
+    pub fn set_effects(
+        &mut self,
+        sources: &[crate::effects::EffectSource],
+    ) -> Vec<String> {
+        use crate::effects::{validate, MAX_PASSES};
+        let mut errors = Vec::new();
+        if sources.len() > MAX_PASSES {
+            errors.push(format!(
+                "at most {MAX_PASSES} effect shaders are supported; ignoring the rest"
+            ));
+        }
+        let valid: Vec<_> = sources
+            .iter()
+            .take(MAX_PASSES)
+            .filter_map(|s| validate(s).map_err(|e| errors.push(e)).ok())
+            .collect();
+        self.effect_clock = crate::effects::EffectClock::default();
+        match &self.ctx.inner {
+            #[cfg(feature = "wgpu")]
+            crate::context::ContextType::Wgpu(ctx) => {
+                if valid.is_empty() {
+                    self.wgpu_effects = None;
+                } else {
+                    let fx = self.wgpu_effects.get_or_insert_with(|| {
+                        crate::effects::webgpu::WgpuEffects::new(ctx)
+                    });
+                    errors.extend(fx.set_passes(ctx, &valid));
+                    if !fx.is_active() {
+                        self.wgpu_effects = None;
+                    }
+                }
+            }
+            #[cfg(target_os = "macos")]
+            crate::context::ContextType::Metal(ctx) => {
+                self.metal_effects = None;
+                if !valid.is_empty() {
+                    match crate::effects::metal::MetalEffects::new(&ctx.device) {
+                        Ok(mut fx) => {
+                            errors.extend(fx.set_passes(&ctx.device, &valid));
+                            if fx.is_active() {
+                                self.metal_effects = Some(fx);
+                            }
+                        }
+                        Err(e) => errors.push(format!("effect host passes: {e}")),
+                    }
+                }
+            }
+            _ => {
+                if !sources.is_empty() {
+                    errors.push(
+                        "custom effects are not supported by this renderer backend"
+                            .into(),
+                    );
+                }
+            }
+        }
+        errors
+    }
+
+    /// Whether a custom effect chain is installed and running.
+    pub fn has_effects(&self) -> bool {
+        #[cfg(feature = "wgpu")]
+        if self.wgpu_effects.as_ref().is_some_and(|fx| fx.is_active()) {
+            return true;
+        }
+        #[cfg(target_os = "macos")]
+        if self.metal_effects.as_ref().is_some_and(|fx| fx.is_active()) {
+            return true;
+        }
+        false
     }
 
     #[inline]
@@ -921,6 +1008,17 @@ impl Sugarloaf<'_> {
         &mut self,
         grids: &mut [(&mut crate::grid::GridRenderer, crate::grid::GridUniforms)],
     ) {
+        self.render_with_panels(grids, &[]);
+    }
+
+    /// `render_with_grids` plus where each grid's panel sits, index-aligned
+    /// with `grids`. Panels are what custom effects capture and process;
+    /// grids without a panel entry render directly.
+    pub fn render_with_panels(
+        &mut self,
+        grids: &mut [(&mut crate::grid::GridRenderer, crate::grid::GridUniforms)],
+        panels: &[crate::effects::EffectPanel],
+    ) {
         self.state.compute_dimensions();
         self.state.compute_updates(
             &mut self.renderer,
@@ -933,11 +1031,11 @@ impl Sugarloaf<'_> {
         match self.ctx.inner {
             #[cfg(feature = "wgpu")]
             crate::context::ContextType::Wgpu(_) => {
-                self.render_wgpu(grids);
+                self.render_wgpu(grids, panels);
             }
             #[cfg(target_os = "macos")]
             crate::context::ContextType::Metal(_) => {
-                self.render_metal(grids);
+                self.render_metal(grids, panels);
             }
             #[cfg(target_os = "linux")]
             crate::context::ContextType::Vulkan(_) => {
@@ -987,17 +1085,50 @@ impl Sugarloaf<'_> {
     pub fn render_metal(
         &mut self,
         grids: &mut [(&mut crate::grid::GridRenderer, crate::grid::GridUniforms)],
+        panels: &[crate::effects::EffectPanel],
     ) {
         let ctx = match &mut self.ctx.inner {
             crate::context::ContextType::Metal(metal) => metal,
             _ => return,
         };
 
+        let mut captured = Vec::new();
+        if let Some(fx) = self.metal_effects.as_mut() {
+            let (time, time_delta, frame) = self.effect_clock.tick();
+            let alpha = crate::effects::metal::surface_alpha(ctx);
+            let window = (ctx.size.width, ctx.size.height);
+            for (grid, panel) in panels.iter().enumerate().take(grids.len()) {
+                let Some(rect) = panel.clipped_rect(window) else {
+                    continue;
+                };
+                let uniform = crate::effects::EffectFrameUniform {
+                    resolution: [rect[2] as f32, rect[3] as f32],
+                    time,
+                    time_delta,
+                    frame,
+                    scale: ctx.scale,
+                    cell_size: panel.cell_size,
+                };
+                fx.prepare_panel(&ctx.device, panel.id, rect, uniform, alpha);
+                captured.push(crate::renderer::CapturedPanel {
+                    grid,
+                    id: panel.id,
+                    rect,
+                });
+            }
+            let ids: Vec<usize> = captured.iter().map(|c| c.id).collect();
+            fx.retain_panels(&ids);
+        }
+
         let bg_color = self
             .background_color
             .map(|c| [c.r as f32, c.g as f32, c.b as f32, c.a as f32]);
+        let effects = self
+            .metal_effects
+            .as_ref()
+            .map(|fx| (fx, captured.as_slice()));
         self.renderer
-            .render_metal(ctx, bg_color, grids, &mut self.text);
+            .render_metal(ctx, bg_color, grids, &mut self.text, effects);
 
         self.reset();
     }
@@ -1132,7 +1263,10 @@ impl Sugarloaf<'_> {
     pub fn render_wgpu(
         &mut self,
         grids: &mut [(&mut crate::grid::GridRenderer, crate::grid::GridUniforms)],
+        panels: &[crate::effects::EffectPanel],
     ) {
+        use crate::renderer::{ImageLayer, PanelFilter};
+
         let ctx = match &mut self.ctx.inner {
             crate::context::ContextType::Wgpu(wgpu) => wgpu,
             _ => return,
@@ -1154,37 +1288,128 @@ impl Sugarloaf<'_> {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        {
-            let load = if let Some(background_color) = self.background_color {
-                // The grid bg pass emits `(0,0,0,0)` for default-bg cells (see
-                // `cell_bg` in `frontends/rioterm/src/grid_emit.rs`) and blends
-                // premultiplied-over the cleared color, so the framebuffer alpha
-                // for any cell that didn't get an explicit bg ends up = the clear
-                // alpha. When the user sets `window.opacity < 1` we want the
-                // compositor to treat that cleared color as a translucent overlay
-                // over the desktop.
-                //
-                // Only a surface in `PreMultiplied` mode (DWM via the Windows
-                // wgpu Vulkan path, Wayland) reads the RGB as already
-                // multiplied by alpha, so only there may the clear be
-                // premultiplied. `PostMultiplied` wants the straight value,
-                // and everything else (`Opaque`, and `Auto` resolving to it)
-                // ignores the alpha byte entirely: premultiplying would just
-                // darken the window with no transparency in return.
-                let clear = match ctx.alpha_mode {
-                    wgpu::CompositeAlphaMode::PreMultiplied => wgpu::Color {
-                        r: background_color.r * background_color.a,
-                        g: background_color.g * background_color.a,
-                        b: background_color.b * background_color.a,
-                        a: background_color.a,
-                    },
-                    _ => background_color.into(),
-                };
-                wgpu::LoadOp::Clear(clear)
-            } else {
-                wgpu::LoadOp::Load
-            };
+        // The grid bg pass emits `(0,0,0,0)` for default-bg cells (see
+        // `cell_bg` in `frontends/rioterm/src/grid_emit.rs`) and blends
+        // premultiplied-over the cleared color, so the framebuffer alpha
+        // for any cell that didn't get an explicit bg ends up = the clear
+        // alpha. When the user sets `window.opacity < 1` we want the
+        // compositor to treat that cleared color as a translucent overlay
+        // over the desktop.
+        //
+        // Only a surface in `PreMultiplied` mode (DWM via the Windows
+        // wgpu Vulkan path, Wayland) reads the RGB as already
+        // multiplied by alpha, so only there may the clear be
+        // premultiplied. `PostMultiplied` wants the straight value,
+        // and everything else (`Opaque`, and `Auto` resolving to it)
+        // ignores the alpha byte entirely: premultiplying would just
+        // darken the window with no transparency in return.
+        let clear = self
+            .background_color
+            .map(|background_color| match ctx.alpha_mode {
+                wgpu::CompositeAlphaMode::PreMultiplied => wgpu::Color {
+                    r: background_color.r * background_color.a,
+                    g: background_color.g * background_color.a,
+                    b: background_color.b * background_color.a,
+                    a: background_color.a,
+                },
+                _ => background_color.into(),
+            });
 
+        // Panels captured by the effect chain this frame: (grid index, id).
+        let mut captured: Vec<(usize, usize)> = Vec::new();
+        if let Some(fx) = self.wgpu_effects.as_mut() {
+            let (time, time_delta, frame_no) = self.effect_clock.tick();
+            let alpha = crate::effects::webgpu::surface_alpha(ctx);
+            let window = (ctx.size.width, ctx.size.height);
+            for (i, panel) in panels.iter().enumerate().take(grids.len()) {
+                let Some(rect) = panel.clipped_rect(window) else {
+                    continue;
+                };
+                let uniform = crate::effects::EffectFrameUniform {
+                    resolution: [rect[2] as f32, rect[3] as f32],
+                    time,
+                    time_delta,
+                    frame: frame_no,
+                    scale: ctx.scale,
+                    cell_size: panel.cell_size,
+                };
+                if fx.prepare_panel(ctx, &self.renderer, panel.id, rect, uniform, alpha) {
+                    captured.push((i, panel.id));
+                }
+            }
+            let ids: Vec<usize> = captured.iter().map(|(_, id)| *id).collect();
+            fx.retain_panels(&ids);
+
+            for &(i, id) in &captured {
+                let (Some(target), Some(constant)) =
+                    (fx.capture_view(id), fx.constant_bind_group(id))
+                else {
+                    continue;
+                };
+                let rect = panels[i].clipped_rect(window).unwrap_or_default();
+                let (grid, uniforms) = &mut grids[i];
+                // Same grid, drawn in panel-local coordinates.
+                let mut local = *uniforms;
+                local.projection = crate::components::core::orthographic_projection(
+                    rect[2] as f32,
+                    rect[3] as f32,
+                );
+                local.grid_padding[0] -= rect[1] as f32;
+                local.grid_padding[3] -= rect[0] as f32;
+
+                let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("effects::capture"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(
+                                clear.unwrap_or(wgpu::Color::TRANSPARENT),
+                            ),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                let only = PanelFilter::Only(id);
+                let r = &self.renderer;
+                r.render_background_wgpu(ctx, &mut rpass, Some(constant));
+                r.render_images_wgpu(
+                    ctx,
+                    &mut rpass,
+                    Some(constant),
+                    ImageLayer::BelowBg,
+                    only,
+                );
+                grid.render_bg_wgpu(&mut rpass, &local);
+                r.render_images_wgpu(
+                    ctx,
+                    &mut rpass,
+                    Some(constant),
+                    ImageLayer::BelowText,
+                    only,
+                );
+                grid.render_text_wgpu(&mut rpass, &local);
+                r.render_images_wgpu(
+                    ctx,
+                    &mut rpass,
+                    Some(constant),
+                    ImageLayer::AboveText,
+                    only,
+                );
+                drop(rpass);
+                fx.run_chain(&mut encoder, id);
+            }
+        }
+        let captured_ids: Vec<usize> = captured.iter().map(|(_, id)| *id).collect();
+        let is_captured = |i: usize| captured.iter().any(|(gi, _)| *gi == i);
+
+        {
+            let load = clear.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear);
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -1202,23 +1427,38 @@ impl Sugarloaf<'_> {
                 multiview_mask: None,
             });
 
-            // Grid passes first — cell bg/text composite under
-            // the rich-text UI overlays drawn below. Wgpu
-            // doesn't yet interleave kitty image layers with
-            // the grid bg/text split (BrushRenderer::render
-            // owns kitty image draws inline), so for now the
-            // bg+text passes run back-to-back per panel —
-            // same visual result as the prior single render
-            // call. Re-ordering kitty layers around the
-            // bg/text split would require pulling image
-            // draws out of BrushRenderer::render — Metal
-            // already does that; wgpu follow-up.
-            for (grid, uniforms) in grids.iter_mut() {
-                grid.render_bg_wgpu(&mut rpass, uniforms);
-                grid.render_text_wgpu(&mut rpass, uniforms);
+            // Same layering as the Metal backend: bg image, then per
+            // panel BelowBg images → cell bg → BelowText images → cell
+            // text → AboveText images, then window UI on top.
+            let except = PanelFilter::Except(&captured_ids);
+            let r = &self.renderer;
+            r.render_background_wgpu(ctx, &mut rpass, None);
+            r.render_images_wgpu(ctx, &mut rpass, None, ImageLayer::BelowBg, except);
+            for (i, (grid, uniforms)) in grids.iter_mut().enumerate() {
+                if !is_captured(i) {
+                    grid.render_bg_wgpu(&mut rpass, uniforms);
+                }
+            }
+            r.render_images_wgpu(ctx, &mut rpass, None, ImageLayer::BelowText, except);
+            for (i, (grid, uniforms)) in grids.iter_mut().enumerate() {
+                if !is_captured(i) {
+                    grid.render_text_wgpu(&mut rpass, uniforms);
+                }
+            }
+            r.render_images_wgpu(ctx, &mut rpass, None, ImageLayer::AboveText, except);
+
+            if let Some(fx) = self.wgpu_effects.as_ref() {
+                if !captured_ids.is_empty() {
+                    for &id in &captured_ids {
+                        fx.composite(&mut rpass, id);
+                    }
+                    let (w, h) = (ctx.size.width, ctx.size.height);
+                    rpass.set_viewport(0.0, 0.0, w, h, 0.0, 1.0);
+                    rpass.set_scissor_rect(0, 0, w as u32, h as u32);
+                }
             }
 
-            self.renderer.render(ctx, &mut rpass);
+            self.renderer.render_quads_wgpu(ctx, &mut rpass);
 
             // UI text pass (swash-backed). Lazy-init the
             // wgpu pipeline + atlases on the first frame.

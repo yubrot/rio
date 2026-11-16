@@ -237,6 +237,7 @@ impl Screen<'_> {
 
         #[cfg(wgpu_backend)]
         sugarloaf.update_filters(config.renderer.filters.as_slice());
+        crate::custom_effects::apply(&mut sugarloaf, &config.effects.custom);
 
         let mut renderer = Renderer::new(config);
         if let Some(titlebar) = window_properties.titlebar {
@@ -553,6 +554,7 @@ impl Screen<'_> {
         #[cfg(wgpu_backend)]
         self.sugarloaf
             .update_filters(config.renderer.filters.as_slice());
+        crate::custom_effects::apply(&mut self.sugarloaf, &config.effects.custom);
 
         // Rebuild bindings so `[bindings]` edits live-reload like the
         // rest of the config instead of waiting for a new window.
@@ -4118,6 +4120,8 @@ impl Screen<'_> {
         {
             struct PanelFrame {
                 route_id: usize,
+                /// Image-overlay / effect key of the panel.
+                rich_text_id: usize,
                 layout_rect: [f32; 4],
                 cols: u32,
                 rows: u32,
@@ -4316,6 +4320,7 @@ impl Screen<'_> {
                     .cursor_color(&term_colors, ctx.renderable_content.is_vi_mode);
                 panels.push(PanelFrame {
                     route_id: ctx.route_id,
+                    rich_text_id: ctx.rich_text_id,
                     layout_rect: item.layout_rect,
                     cols: ctx.renderable_content.columns.max(1) as u32,
                     rows: ctx.renderable_content.screen_lines.max(1) as u32,
@@ -4366,6 +4371,8 @@ impl Screen<'_> {
                 &mut rio_backend::sugarloaf::grid::GridRenderer,
                 rio_backend::sugarloaf::grid::GridUniforms,
             )> = Vec::with_capacity(panels.len());
+            let mut frame_panels: Vec<rio_backend::sugarloaf::effects::EffectPanel> =
+                Vec::with_capacity(panels.len());
 
             let rasterizer = &mut self.grid_rasterizer;
             let renderer_ref = &self.renderer;
@@ -4679,6 +4686,10 @@ impl Screen<'_> {
                 // about where cell boundaries are → visible seams.
                 let panel_left = (scaled_margin.left + p.layout_rect[0]).round();
                 let panel_top = (scaled_margin.top + p.layout_rect[1]).round();
+                let panel_right =
+                    (scaled_margin.left + p.layout_rect[0] + p.layout_rect[2]).round();
+                let panel_bottom =
+                    (scaled_margin.top + p.layout_rect[1] + p.layout_rect[3]).round();
 
                 // Bg-tint uniforms fire ONLY for the active block
                 // style — the bg shader paints the cursor cell in
@@ -4733,13 +4744,24 @@ impl Screen<'_> {
                 };
 
                 frame_grids.push((grid, uniforms));
+                frame_panels.push(rio_backend::sugarloaf::effects::EffectPanel {
+                    id: p.rich_text_id,
+                    rect: [
+                        panel_left,
+                        panel_top,
+                        panel_right - panel_left,
+                        panel_bottom - panel_top,
+                    ],
+                    cell_size: [p.cell_w, p.cell_h],
+                });
             }
 
             if should_present {
                 if frame_grids.is_empty() {
                     self.sugarloaf.render();
                 } else {
-                    self.sugarloaf.render_with_grids(&mut frame_grids);
+                    self.sugarloaf
+                        .render_with_panels(&mut frame_grids, &frame_panels);
                 }
                 // A dropped frame (no drawable, e.g. right after wake)
                 // already consumed this frame's damage; without a retry

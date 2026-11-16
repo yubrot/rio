@@ -27,6 +27,10 @@ const SHADERS: &[(&str, &str)] = &[
         "components/filters/shader/blit.wgsl",
         include_str!("../src/components/filters/shader/blit.wgsl"),
     ),
+    (
+        "effects/host.wgsl",
+        include_str!("../src/effects/host.wgsl"),
+    ),
 ];
 
 #[test]

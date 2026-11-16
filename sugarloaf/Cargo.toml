@@ -79,6 +79,8 @@ librashader-reflect = { version = "0.12", features = ["stable", "wgsl"], default
 librashader-runtime = { version = "0.12", optional = true }
 librashader-cache = { version = "0.12", optional = true }
 thiserror = "2.0.1"
+# Runtime validation of external effect WGSL; same version as wgpu's own naga.
+naga = { version = "30.0.2", features = ["wgsl-in"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = { package = "baremetal", version = "0.33.0" }
@@ -88,6 +90,7 @@ core-graphics = "0.24.0"
 core-text = "21.0.0"
 core-foundation = "0.10.1"
 block = { package = "block-rs", version = "0.2.0" }
+naga = { version = "30.0.2", features = ["wgsl-in", "msl-out"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = "1.10.0"
@@ -127,7 +130,8 @@ rio-window = { workspace = true }
 png = "0.17.16"
 deflate = "1.0.0"
 criterion = { workspace = true }
-naga = { version = "30.0.0", features = ["wgsl-in"] }
+# Lets the MSL translation tests run on every platform.
+naga = { version = "30.0.2", features = ["wgsl-in", "msl-out"] }
 
 [features]
 default = ["scale", "render"]

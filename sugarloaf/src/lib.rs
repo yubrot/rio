@@ -1,5 +1,6 @@
 pub mod components;
 pub mod context;
+pub mod effects;
 pub mod font;
 mod font_cache;
 pub mod grid;
