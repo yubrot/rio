@@ -3,16 +3,16 @@
 
 use super::msl::{effect_resources, host_resources, to_msl, validator};
 use super::{
-    EffectFrameUniform, HostPassUniform, SurfaceAlpha, ValidatedEffect, FRAGMENT_ENTRY,
+    HostPassUniform, PanelUniforms, SurfaceAlpha, ValidatedEffect, FRAGMENT_ENTRY,
     VERTEX_ENTRY,
 };
 use metal::{
-    CommandBufferRef, CompileOptions, Device, MTLClearColor, MTLLoadAction,
-    MTLPixelFormat, MTLPrimitiveType, MTLSamplerAddressMode, MTLSamplerMinMagFilter,
-    MTLScissorRect, MTLStorageMode, MTLStoreAction, MTLTextureType, MTLTextureUsage,
-    MTLViewport, RenderCommandEncoderRef, RenderPassDescriptor, RenderPipelineDescriptor,
-    RenderPipelineState, SamplerDescriptor, SamplerState, Texture, TextureDescriptor,
-    TextureRef,
+    Buffer, CommandBufferRef, CompileOptions, Device, MTLClearColor, MTLLoadAction,
+    MTLPixelFormat, MTLPrimitiveType, MTLResourceOptions, MTLSamplerAddressMode,
+    MTLSamplerMinMagFilter, MTLScissorRect, MTLStorageMode, MTLStoreAction,
+    MTLTextureType, MTLTextureUsage, MTLViewport, RenderCommandEncoderRef,
+    RenderPassDescriptor, RenderPipelineDescriptor, RenderPipelineState,
+    SamplerDescriptor, SamplerState, Texture, TextureDescriptor, TextureRef,
 };
 use rustc_hash::FxHashMap;
 
@@ -37,7 +37,9 @@ struct PanelTargets {
     chain: Vec<Texture>,
     /// Clipped window rect `[x, y, w, h]` for this frame.
     rect: [u32; 4],
-    frame: EffectFrameUniform,
+    /// This frame's uniform blocks; Metal slot `i` is block `i`. Fresh
+    /// buffers each frame, retained by the command buffer while in flight.
+    uniforms: Vec<Buffer>,
     alpha: SurfaceAlpha,
 }
 
@@ -126,7 +128,7 @@ impl MetalEffects {
         device: &Device,
         id: usize,
         rect: [u32; 4],
-        frame: EffectFrameUniform,
+        uniforms: &PanelUniforms,
         alpha: SurfaceAlpha,
     ) {
         let size = [rect[2], rect[3]];
@@ -141,7 +143,17 @@ impl MetalEffects {
             })
             .or_insert_with(|| PanelTargets::new(device, size, chain_len));
         t.rect = rect;
-        t.frame = frame;
+        t.uniforms = uniforms
+            .blocks
+            .iter()
+            .map(|data| {
+                device.new_buffer_with_data(
+                    data.as_ptr() as *const std::ffi::c_void,
+                    data.len() as u64,
+                    MTLResourceOptions::StorageModeShared,
+                )
+            })
+            .collect();
         t.alpha = alpha;
     }
 
@@ -179,7 +191,9 @@ impl MetalEffects {
             };
             let enc = begin_pass(command_buffer, &t.chain[i % 2], "effects::pass");
             enc.set_render_pipeline_state(pass);
-            set_fragment_bytes(enc, 0, &t.frame);
+            for (slot, buffer) in t.uniforms.iter().enumerate() {
+                enc.set_fragment_buffer(slot as u64, Some(buffer), 0);
+            }
             enc.set_fragment_texture(0, Some(input));
             enc.set_fragment_texture(1, Some(&t.original));
             enc.set_fragment_sampler_state(0, Some(&self.sampler));
@@ -217,7 +231,7 @@ impl PanelTargets {
                 .map(|_| texture(device, size, CHAIN_FORMAT))
                 .collect(),
             rect: [0; 4],
-            frame: EffectFrameUniform::default(),
+            uniforms: Vec::new(),
             alpha: SurfaceAlpha::Opaque,
         }
     }

@@ -3,6 +3,7 @@
 //! Each user file implements `fn effect_main(pos: vec2<f32>) -> vec4<f32>`.
 //! Rio appends [`PRELUDE`] after the user source (so user line numbers stay
 //! intact in diagnostics), which declares the host bindings and entry points.
+#![cfg_attr(not(any(feature = "wgpu", target_os = "macos")), allow(dead_code))]
 
 #[cfg(target_os = "macos")]
 pub(crate) mod metal;
@@ -11,7 +12,9 @@ mod msl;
 #[cfg(feature = "wgpu")]
 pub(crate) mod webgpu;
 
+use crate::sugarloaf::Colorspace;
 use naga::valid::{Capabilities, ValidationFlags, Validator};
+use rustc_hash::FxHashMap;
 
 /// Version of the WGSL ABI implemented by this build.
 pub const API_VERSION: u32 = 1;
@@ -58,16 +61,121 @@ pub struct EffectFrameUniform {
     pub scale: f32,
     /// Terminal cell size in physical pixels.
     pub cell_size: [f32; 2],
+    /// 1 while the panel has keyboard focus.
+    pub focused: u32,
+    /// `time` at which `focused` last changed.
+    pub focus_time: f32,
+    pub _pad: [u32; 2],
 }
 
-/// Where a panel sits in the window, in physical pixels.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Number of palette entries exposed as `rio_theme.palette`.
+pub const PALETTE_SIZE: usize = 256;
+
+/// Theme colors of a panel as configured (straight alpha, in the
+/// configured input colorspace); converted for shaders by the host.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EffectTheme {
+    pub foreground: [f32; 4],
+    pub background: [f32; 4],
+    pub cursor: [f32; 4],
+    pub selection_foreground: [f32; 4],
+    pub selection_background: [f32; 4],
+    pub palette: [[f32; 4]; PALETTE_SIZE],
+}
+
+impl Default for EffectTheme {
+    fn default() -> Self {
+        Self {
+            foreground: [0.0; 4],
+            background: [0.0; 4],
+            cursor: [0.0; 4],
+            selection_foreground: [0.0; 4],
+            selection_background: [0.0; 4],
+            palette: [[0.0; 4]; PALETTE_SIZE],
+        }
+    }
+}
+
+impl EffectTheme {
+    /// Bytes of `rio_theme`: every color in the shader color space.
+    fn to_uniform(&self, colorspace: Colorspace) -> Vec<u8> {
+        let named = [
+            self.foreground,
+            self.background,
+            self.cursor,
+            self.selection_foreground,
+            self.selection_background,
+        ];
+        let colors: Vec<[f32; 4]> = named
+            .iter()
+            .chain(self.palette.iter())
+            .map(|c| shader_color(*c, colorspace))
+            .collect();
+        bytemuck::cast_slice(&colors).to_vec()
+    }
+}
+
+/// Size of `rio_theme` in bytes.
+#[cfg(any(feature = "wgpu", test))]
+const THEME_SIZE: usize = (5 + PALETTE_SIZE) * 16;
+
+/// A configured color as the shaders see the sampled image: the cell
+/// shaders' gamut mapping into DisplayP3, then linear and premultiplied.
+fn shader_color(c: [f32; 4], colorspace: Colorspace) -> [f32; 4] {
+    const SRGB_TO_P3: [[f32; 3]; 3] = [
+        [0.822_461_97, 0.177_538_03, 0.0],
+        [0.033_194_2, 0.966_805_8, 0.0],
+        [0.017_082_63, 0.072_397_44, 0.910_519_93],
+    ];
+    const REC2020_TO_P3: [[f32; 3]; 3] = [
+        [1.343_578_3, -0.282_179_67, -0.061_398_58],
+        [-0.065_297_45, 1.087_822_3, -0.022_524_81],
+        [0.002_821_79, -0.025_988_07, 1.023_166_3],
+    ];
+    let to_linear = |v: f32| {
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let lin = [to_linear(c[0]), to_linear(c[1]), to_linear(c[2])];
+    let rgb = match colorspace {
+        Colorspace::Srgb => {
+            SRGB_TO_P3.map(|r| r[0] * lin[0] + r[1] * lin[1] + r[2] * lin[2])
+        }
+        Colorspace::Rec2020 => {
+            REC2020_TO_P3.map(|r| r[0] * lin[0] + r[1] * lin[1] + r[2] * lin[2])
+        }
+        Colorspace::DisplayP3 => lin,
+    };
+    let a = c[3].clamp(0.0, 1.0);
+    [rgb[0] * a, rgb[1] * a, rgb[2] * a, a]
+}
+
+/// Bindings of the per-panel uniform blocks, in [`PanelUniforms::blocks`]
+/// order. On Metal block `i` is buffer slot `i`.
+pub(crate) const UNIFORM_BINDINGS: [u32; 2] = [0, 4];
+#[cfg(any(feature = "wgpu", test))]
+pub(crate) const UNIFORM_SIZES: [usize; 2] =
+    [std::mem::size_of::<EffectFrameUniform>(), THEME_SIZE];
+
+/// Per-panel uniform data for one frame.
+pub(crate) struct PanelUniforms {
+    pub blocks: [Vec<u8>; 2],
+}
+
+/// Where a panel sits in the window, in physical pixels, plus its state.
+#[derive(Debug, Clone, PartialEq)]
 pub struct EffectPanel {
     /// Image-overlay key (`rich_text_id`) of the panel.
     pub id: usize,
     /// `[x, y, width, height]`, integer-aligned.
     pub rect: [f32; 4],
     pub cell_size: [f32; 2],
+    /// Whether the panel has keyboard focus (window focused, active split).
+    pub focused: bool,
+    pub theme: EffectTheme,
 }
 
 impl EffectPanel {
@@ -103,6 +211,78 @@ pub(crate) struct HostPassUniform {
     pub origin: [f32; 2],
     pub alpha_mode: u32,
     pub _pad: u32,
+}
+
+/// Clock and per-panel state shared by both GPU backends.
+#[derive(Debug, Default)]
+pub(crate) struct EffectHost {
+    clock: EffectClock,
+    panels: FxHashMap<usize, PanelState>,
+}
+
+#[derive(Debug)]
+struct PanelState {
+    focused: bool,
+    focus_time: f32,
+    /// Last converted theme, reused while the input is unchanged.
+    theme: (EffectTheme, Vec<u8>),
+}
+
+/// Timing of one rendered frame.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FrameTime {
+    time: f32,
+    delta: f32,
+    frame: u32,
+}
+
+impl EffectHost {
+    pub fn begin_frame(&mut self) -> FrameTime {
+        let (time, delta, frame) = self.clock.tick();
+        FrameTime { time, delta, frame }
+    }
+
+    /// Uniforms of `panel`, drawn into a target of `rect`'s size.
+    pub fn uniforms(
+        &mut self,
+        t: FrameTime,
+        panel: &EffectPanel,
+        rect: [u32; 4],
+        scale: f32,
+        colorspace: Colorspace,
+    ) -> PanelUniforms {
+        let state = self.panels.entry(panel.id).or_insert_with(|| PanelState {
+            focused: panel.focused,
+            focus_time: t.time,
+            theme: (panel.theme.clone(), panel.theme.to_uniform(colorspace)),
+        });
+        if state.focused != panel.focused {
+            state.focused = panel.focused;
+            state.focus_time = t.time;
+        }
+        if state.theme.0 != panel.theme {
+            state.theme = (panel.theme.clone(), panel.theme.to_uniform(colorspace));
+        }
+        let frame = EffectFrameUniform {
+            resolution: [rect[2] as f32, rect[3] as f32],
+            time: t.time,
+            time_delta: t.delta,
+            frame: t.frame,
+            scale,
+            cell_size: panel.cell_size,
+            focused: panel.focused as u32,
+            focus_time: state.focus_time,
+            _pad: [0; 2],
+        };
+        PanelUniforms {
+            blocks: [bytemuck::bytes_of(&frame).to_vec(), state.theme.1.clone()],
+        }
+    }
+
+    /// Forget panels not in `ids`.
+    pub fn retain_panels(&mut self, ids: &[usize]) {
+        self.panels.retain(|id, _| ids.contains(id));
+    }
 }
 
 /// Monotonic clock shared by every panel of a chain.
@@ -302,6 +482,60 @@ fn effect_main(pos: vec2<f32>) -> vec4<f32> {
     }
 
     #[test]
+    fn uniform_sizes_match_prelude() {
+        let effect = validate(&src(IDENTITY)).unwrap();
+        let module = &effect.module;
+        for (binding, size) in UNIFORM_BINDINGS.iter().zip(UNIFORM_SIZES) {
+            let (_, var) = module
+                .global_variables
+                .iter()
+                .find(|(_, v)| v.binding.as_ref().is_some_and(|b| b.binding == *binding))
+                .unwrap();
+            let wgsl = module.types[var.ty].inner.size(module.to_ctx()) as usize;
+            assert!(
+                wgsl <= size && size % 16 == 0,
+                "binding {binding}: {wgsl} vs {size}"
+            );
+        }
+    }
+
+    #[test]
+    fn shader_colors_are_linear_premultiplied_p3() {
+        let p3 = |c| shader_color(c, Colorspace::DisplayP3);
+        assert_eq!(p3([1.0, 0.0, 1.0, 0.5]), [0.5, 0.0, 0.5, 0.5]);
+        let gray = p3([0.5, 0.5, 0.5, 1.0]);
+        assert!((gray[0] - 0.214).abs() < 1e-3, "{gray:?}");
+        let white = shader_color([1.0; 4], Colorspace::Srgb);
+        assert!(white.iter().all(|v| (v - 1.0).abs() < 1e-5), "{white:?}");
+    }
+
+    #[test]
+    fn focus_changes_are_timestamped() {
+        let mut host = EffectHost::default();
+        let mut panel = EffectPanel {
+            id: 1,
+            rect: [0.0, 0.0, 10.0, 10.0],
+            cell_size: [1.0, 1.0],
+            focused: false,
+            theme: EffectTheme::default(),
+        };
+        let frame = |host: &mut EffectHost, panel: &EffectPanel, time| {
+            let t = FrameTime {
+                time,
+                delta: 0.0,
+                frame: 0,
+            };
+            let u = host.uniforms(t, panel, [0, 0, 10, 10], 1.0, Colorspace::Srgb);
+            bytemuck::pod_read_unaligned::<EffectFrameUniform>(&u.blocks[0])
+        };
+        assert_eq!(frame(&mut host, &panel, 1.0).focus_time, 1.0);
+        assert_eq!(frame(&mut host, &panel, 2.0).focus_time, 1.0);
+        panel.focused = true;
+        let f = frame(&mut host, &panel, 3.0);
+        assert_eq!((f.focused, f.focus_time), (1, 3.0));
+    }
+
+    #[test]
     fn panel_projection_maps_corners() {
         let m = panel_projection([100.0, 50.0, 200.0, 100.0]);
         let ndc = |x: f32, y: f32| (m[0] * x + m[12], m[5] * y + m[13]);
@@ -315,6 +549,8 @@ fn effect_main(pos: vec2<f32>) -> vec4<f32> {
             id: 0,
             rect: [10.0, 20.0, 1000.0, 30.0],
             cell_size: [1.0, 1.0],
+            focused: false,
+            theme: EffectTheme::default(),
         };
         assert_eq!(p.clipped_rect((500.0, 500.0)), Some([10, 20, 490, 30]));
         assert_eq!(p.clipped_rect((5.0, 5.0)), None);

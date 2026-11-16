@@ -4373,6 +4373,7 @@ impl Screen<'_> {
             )> = Vec::with_capacity(panels.len());
             let mut frame_panels: Vec<rio_backend::sugarloaf::effects::EffectPanel> =
                 Vec::with_capacity(panels.len());
+            let effects_active = self.sugarloaf.has_effects();
 
             let rasterizer = &mut self.grid_rasterizer;
             let renderer_ref = &self.renderer;
@@ -4744,16 +4745,24 @@ impl Screen<'_> {
                 };
 
                 frame_grids.push((grid, uniforms));
-                frame_panels.push(rio_backend::sugarloaf::effects::EffectPanel {
-                    id: p.rich_text_id,
-                    rect: [
-                        panel_left,
-                        panel_top,
-                        panel_right - panel_left,
-                        panel_bottom - panel_top,
-                    ],
-                    cell_size: [p.cell_w, p.cell_h],
-                });
+                if effects_active {
+                    frame_panels.push(rio_backend::sugarloaf::effects::EffectPanel {
+                        id: p.rich_text_id,
+                        rect: [
+                            panel_left,
+                            panel_top,
+                            panel_right - panel_left,
+                            panel_bottom - panel_top,
+                        ],
+                        cell_size: [p.cell_w, p.cell_h],
+                        focused: p.is_active && renderer_ref.is_window_focused,
+                        theme: crate::custom_effects::panel_theme(
+                            renderer_ref,
+                            &p.term_colors,
+                            p.cursor_color,
+                        ),
+                    });
+                }
             }
 
             if should_present {

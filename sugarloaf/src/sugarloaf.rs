@@ -33,7 +33,7 @@ pub struct Sugarloaf<'a> {
     wgpu_effects: Option<crate::effects::webgpu::WgpuEffects>,
     #[cfg(target_os = "macos")]
     metal_effects: Option<crate::effects::metal::MetalEffects>,
-    effect_clock: crate::effects::EffectClock,
+    effect_host: crate::effects::EffectHost,
     state: state::SugarState,
     /// Input colorspace configured at construction. Exposed via
     /// `input_colorspace()` so the grid renderer can feed the same
@@ -264,7 +264,7 @@ impl Sugarloaf<'_> {
             wgpu_effects: None,
             #[cfg(target_os = "macos")]
             metal_effects: None,
-            effect_clock: crate::effects::EffectClock::default(),
+            effect_host: crate::effects::EffectHost::default(),
             graphics: Graphics::default(),
             #[cfg(feature = "wgpu")]
             filters_brush: None,
@@ -479,6 +479,10 @@ impl Sugarloaf<'_> {
     /// Install the custom effect chain, replacing the previous one.
     /// Shaders that fail validation are skipped; the returned errors
     /// describe each failure. An empty `sources` disables effects.
+    #[cfg_attr(
+        not(any(feature = "wgpu", target_os = "macos")),
+        allow(unused_variables)
+    )]
     pub fn set_effects(
         &mut self,
         sources: &[crate::effects::EffectSource],
@@ -495,7 +499,7 @@ impl Sugarloaf<'_> {
             .take(MAX_PASSES)
             .filter_map(|s| validate(s).map_err(|e| errors.push(e)).ok())
             .collect();
-        self.effect_clock = crate::effects::EffectClock::default();
+        self.effect_host = crate::effects::EffectHost::default();
         match &self.ctx.inner {
             #[cfg(feature = "wgpu")]
             crate::context::ContextType::Wgpu(ctx) => {
@@ -1014,6 +1018,10 @@ impl Sugarloaf<'_> {
     /// `render_with_grids` plus where each grid's panel sits, index-aligned
     /// with `grids`. Panels are what custom effects capture and process;
     /// grids without a panel entry render directly.
+    #[cfg_attr(
+        not(any(feature = "wgpu", target_os = "macos")),
+        allow(unused_variables)
+    )]
     pub fn render_with_panels(
         &mut self,
         grids: &mut [(&mut crate::grid::GridRenderer, crate::grid::GridUniforms)],
@@ -1094,22 +1102,17 @@ impl Sugarloaf<'_> {
 
         let mut captured = Vec::new();
         if let Some(fx) = self.metal_effects.as_mut() {
-            let (time, time_delta, frame) = self.effect_clock.tick();
+            let t = self.effect_host.begin_frame();
             let alpha = crate::effects::metal::surface_alpha(ctx);
             let window = (ctx.size.width, ctx.size.height);
             for (grid, panel) in panels.iter().enumerate().take(grids.len()) {
                 let Some(rect) = panel.clipped_rect(window) else {
                     continue;
                 };
-                let uniform = crate::effects::EffectFrameUniform {
-                    resolution: [rect[2] as f32, rect[3] as f32],
-                    time,
-                    time_delta,
-                    frame,
-                    scale: ctx.scale,
-                    cell_size: panel.cell_size,
-                };
-                fx.prepare_panel(&ctx.device, panel.id, rect, uniform, alpha);
+                let uniforms =
+                    self.effect_host
+                        .uniforms(t, panel, rect, ctx.scale, self.colorspace);
+                fx.prepare_panel(&ctx.device, panel.id, rect, &uniforms, alpha);
                 captured.push(crate::renderer::CapturedPanel {
                     grid,
                     id: panel.id,
@@ -1118,6 +1121,7 @@ impl Sugarloaf<'_> {
             }
             let ids: Vec<usize> = captured.iter().map(|c| c.id).collect();
             fx.retain_panels(&ids);
+            self.effect_host.retain_panels(&ids);
         }
 
         let bg_color = self
@@ -1318,27 +1322,24 @@ impl Sugarloaf<'_> {
         // Panels captured by the effect chain this frame: (grid index, id).
         let mut captured: Vec<(usize, usize)> = Vec::new();
         if let Some(fx) = self.wgpu_effects.as_mut() {
-            let (time, time_delta, frame_no) = self.effect_clock.tick();
+            let t = self.effect_host.begin_frame();
             let alpha = crate::effects::webgpu::surface_alpha(ctx);
             let window = (ctx.size.width, ctx.size.height);
             for (i, panel) in panels.iter().enumerate().take(grids.len()) {
                 let Some(rect) = panel.clipped_rect(window) else {
                     continue;
                 };
-                let uniform = crate::effects::EffectFrameUniform {
-                    resolution: [rect[2] as f32, rect[3] as f32],
-                    time,
-                    time_delta,
-                    frame: frame_no,
-                    scale: ctx.scale,
-                    cell_size: panel.cell_size,
-                };
-                if fx.prepare_panel(ctx, &self.renderer, panel.id, rect, uniform, alpha) {
+                let uniforms =
+                    self.effect_host
+                        .uniforms(t, panel, rect, ctx.scale, self.colorspace);
+                if fx.prepare_panel(ctx, &self.renderer, panel.id, rect, &uniforms, alpha)
+                {
                     captured.push((i, panel.id));
                 }
             }
             let ids: Vec<usize> = captured.iter().map(|(_, id)| *id).collect();
             fx.retain_panels(&ids);
+            self.effect_host.retain_panels(&ids);
 
             for &(i, id) in &captured {
                 let (Some(target), Some(constant)) =

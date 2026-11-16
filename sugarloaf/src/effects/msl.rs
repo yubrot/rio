@@ -73,11 +73,14 @@ pub(super) fn to_msl(
     Ok((src, names))
 }
 
-/// Metal slots for the effect ABI (`prelude.wgsl`): frame → buffer 0,
-/// input/original → textures 0/1, sampler → sampler 0.
+/// Metal slots for the effect ABI (`prelude.wgsl`): uniform blocks →
+/// buffers in [`super::UNIFORM_BINDINGS`] order, input/original →
+/// textures 0/1, sampler → sampler 0.
 pub(super) fn effect_resources() -> msl::BindingMap {
     let mut resources = msl::BindingMap::default();
-    resources.insert(binding(0), buffer_target(0));
+    for (slot, b) in super::UNIFORM_BINDINGS.iter().enumerate() {
+        resources.insert(binding(*b), buffer_target(slot as u8));
+    }
     resources.insert(binding(1), texture_target(0));
     resources.insert(binding(2), texture_target(1));
     resources.insert(binding(3), sampler_target(0));

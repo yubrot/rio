@@ -135,7 +135,7 @@ Define CPU representations and a versioned GPU ABI for `EffectFrame` / `EffectEv
 - Monotonic relative time, frame delta, actual frame counter, panel resolution, DPI scale, and cell dimensions. Keep time advancing during suspension; document resumed delta behavior so shaders can handle gaps.
 - Current/previous cursor rectangles, shapes, colors, visibility, and change timestamps. Distinguish position changes from appearance changes, so shaders can react to either.
 - Panel focus state and last focus-change time for focus/blur transitions and animation restarts.
-- The 256-color palette and semantic foreground/background, cursor/cursor-text, and selection colors. Normalize them to the shader color space, matching the sampled image; update theme/palette changes without rebuilding shaders.
+- The 256-color palette and semantic foreground/background, cursor, and selection colors (Rio has no cursor-text color). Normalize them to the shader color space, matching the sampled image: the cell shaders' gamut mapping into DisplayP3 (on both backends), then linear premultiplied. Update theme/palette changes without rebuilding shaders.
 - Timestamped cursor history and typing events in bounded ring buffers, initially 64 entries each. Overwrite the oldest on overflow; do not expire events using a host-owned visual duration. External shaders filter entries by age. Preserve multiple keystrokes between frames.
 - Each typing event carries its occurrence position/time, sequence number, and random seed, but no text. Use the displayed cursor position at input time without waiting for a PTY response.
 - Use panel-local physical pixels with a top-left origin and `x, y, width, height` rectangles. Normalize WGSL/MSL fragment coordinates, margins, splits, scrolling, and wide-cell geometry in the host.
@@ -186,11 +186,12 @@ Porting a shader still requires WGSL translation and input/color/coordinate mapp
 
 ### Milestones and completion criteria
 
-1. [ ] **Validate the shared ABI on both GPU paths**
+1. [x] **Validate the shared ABI on both GPU paths**
    - Split per-panel terminal content from window UI on both backends and implement the capture boundary above.
    - Run external WGSL image passes on Windows/wgpu and macOS/Metal: identity, spatial distortion, and a two-pass chain. Verify each pass reads the correct input and the original texture remains unchanged.
    - Verify WGSL-to-MSL translation, event/uniform layouts, named parameter reflection/packing, alpha, sRGB/DisplayP3, transparent windows, neighborhood sampling, and panel boundaries. Confirm focus/theme uniforms update correctly.
    - Freeze the ABI and insertion points only after both backends work.
+   - Status: ABI v1 is frozen as group 0 = `rio_frame` (incl. `focused`/`focus_time`), `rio_input`, `rio_original`, `rio_sampler`, `rio_theme`. Later milestones only append (new `rio_*` bindings, `@group(1)` params, new trailing fields), so v1 shaders keep working. Event layouts and parameter packing are defined in M2–M4 under that rule. Metal runs of focus/theme uniforms are pending a Mac check.
 2. [ ] **Configuration, loader, parameters, and recovery**
    - Extend `config/effects.rs`, including platform-specific overrides.
    - Add shared models, validation, parameter packing, and backend pipelines under a module such as `sugarloaf/src/effects/`.

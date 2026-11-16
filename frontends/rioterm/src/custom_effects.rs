@@ -1,7 +1,10 @@
 //! Loads `[effects.custom]` shader files and installs them into sugarloaf.
 
+use crate::renderer::Renderer;
+use rio_backend::config::colors::term::TermColors;
+use rio_backend::config::colors::{ColorArray, NamedColor};
 use rio_backend::config::effects::CustomEffects;
-use rio_backend::sugarloaf::effects::{EffectSource, API_VERSION};
+use rio_backend::sugarloaf::effects::{EffectSource, EffectTheme, API_VERSION};
 use rio_backend::sugarloaf::Sugarloaf;
 use std::path::{Path, PathBuf};
 
@@ -54,6 +57,27 @@ pub fn apply(sugarloaf: &mut Sugarloaf, custom: &CustomEffects) {
     for error in errors {
         tracing::error!("[effects.custom] {error}");
     }
+}
+
+/// Theme colors of a panel, including its terminal's OSC overrides.
+pub fn panel_theme(
+    renderer: &Renderer,
+    term_colors: &TermColors,
+    cursor: ColorArray,
+) -> EffectTheme {
+    let color = |i: usize| renderer.color(i, term_colors);
+    let mut theme = EffectTheme {
+        foreground: color(NamedColor::Foreground as usize),
+        background: color(NamedColor::Background as usize),
+        cursor,
+        selection_foreground: renderer.named_colors.selection_foreground,
+        selection_background: renderer.named_colors.selection_background,
+        ..Default::default()
+    };
+    for (i, c) in theme.palette.iter_mut().enumerate() {
+        *c = color(i);
+    }
+    theme
 }
 
 #[cfg(test)]

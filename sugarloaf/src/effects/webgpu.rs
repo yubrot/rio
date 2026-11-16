@@ -2,8 +2,8 @@
 //! user passes → encode pipeline, and pipeline creation with error scopes.
 
 use super::{
-    EffectFrameUniform, HostPassUniform, SurfaceAlpha, ValidatedEffect, FRAGMENT_ENTRY,
-    VERTEX_ENTRY,
+    HostPassUniform, PanelUniforms, SurfaceAlpha, ValidatedEffect, FRAGMENT_ENTRY,
+    UNIFORM_BINDINGS, UNIFORM_SIZES, VERTEX_ENTRY,
 };
 use crate::context::webgpu::WgpuContext;
 use crate::renderer::Renderer;
@@ -28,7 +28,8 @@ struct PanelTargets {
     /// Bind group for drawing window-space content into `capture`.
     constant: wgpu::BindGroup,
     transform: wgpu::Buffer,
-    frame: wgpu::Buffer,
+    /// Per-panel uniform blocks, in [`UNIFORM_BINDINGS`] order.
+    uniforms: Vec<wgpu::Buffer>,
     decode_uniform: wgpu::Buffer,
     encode_uniform: wgpu::Buffer,
     original: wgpu::TextureView,
@@ -64,22 +65,24 @@ impl WgpuEffects {
             },
             count: None,
         };
+        let effect_entries: Vec<_> = UNIFORM_BINDINGS
+            .iter()
+            .map(|&b| uniform_entry(b))
+            .chain([
+                texture_entry(1),
+                texture_entry(2),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ])
+            .collect();
         let effect_bgl =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("effects::bgl"),
-                entries: &[
-                    uniform_entry(0),
-                    texture_entry(1),
-                    texture_entry(2),
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(
-                            wgpu::SamplerBindingType::Filtering,
-                        ),
-                        count: None,
-                    },
-                ],
+                entries: &effect_entries,
             });
         let host_bgl =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -187,7 +190,7 @@ impl WgpuEffects {
         renderer: &Renderer,
         id: usize,
         rect: [u32; 4],
-        frame: EffectFrameUniform,
+        uniforms: &PanelUniforms,
         alpha: SurfaceAlpha,
     ) -> bool {
         let size = [rect[2], rect[3]];
@@ -208,7 +211,9 @@ impl WgpuEffects {
             0,
             bytemuck::cast_slice(&super::panel_projection(rectf)),
         );
-        queue.write_buffer(&t.frame, 0, bytemuck::bytes_of(&frame));
+        for (buffer, data) in t.uniforms.iter().zip(&uniforms.blocks) {
+            queue.write_buffer(buffer, 0, data);
+        }
         let host = |origin: [f32; 2]| HostPassUniform {
             origin,
             alpha_mode: alpha as u32,
@@ -326,7 +331,10 @@ impl WgpuEffects {
         let capture = texture("effects::capture", ctx.format);
         let transform = uniform("effects::transform", std::mem::size_of::<[f32; 16]>());
         let constant = renderer.constant_bind_group_wgpu(ctx, &transform)?;
-        let frame = uniform("effects::frame", std::mem::size_of::<EffectFrameUniform>());
+        let uniforms: Vec<_> = UNIFORM_SIZES
+            .iter()
+            .map(|&size| uniform("effects::uniform", size))
+            .collect();
         let decode_uniform =
             uniform("effects::decode", std::mem::size_of::<HostPassUniform>());
         let encode_uniform =
@@ -344,14 +352,14 @@ impl WgpuEffects {
                 } else {
                     &chain[(i - 1) % 2]
                 };
-                device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("effects::pass_bg"),
-                    layout: &self.effect_bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: frame.as_entire_binding(),
-                        },
+                let blocks = UNIFORM_BINDINGS.iter().zip(&uniforms).map(|(b, buf)| {
+                    wgpu::BindGroupEntry {
+                        binding: *b,
+                        resource: buf.as_entire_binding(),
+                    }
+                });
+                let entries: Vec<_> = blocks
+                    .chain([
                         wgpu::BindGroupEntry {
                             binding: 1,
                             resource: wgpu::BindingResource::TextureView(input),
@@ -364,7 +372,12 @@ impl WgpuEffects {
                             binding: 3,
                             resource: wgpu::BindingResource::Sampler(&self.sampler),
                         },
-                    ],
+                    ])
+                    .collect();
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("effects::pass_bg"),
+                    layout: &self.effect_bgl,
+                    entries: &entries,
                 })
             })
             .collect();
@@ -376,7 +389,7 @@ impl WgpuEffects {
             capture,
             constant,
             transform,
-            frame,
+            uniforms,
             decode_uniform,
             encode_uniform,
             original,

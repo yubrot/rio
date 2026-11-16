@@ -13,6 +13,21 @@ struct RioEffectFrame {
     scale: f32,
     // Terminal cell size in physical pixels.
     cell_size: vec2<f32>,
+    // 1 while the panel has keyboard focus (focused window, active split).
+    focused: u32,
+    // `time` at which `focused` last changed.
+    focus_time: f32,
+}
+
+// Colors are linear premultiplied, matching the sampled terminal image.
+struct RioEffectTheme {
+    foreground: vec4<f32>,
+    background: vec4<f32>,
+    cursor: vec4<f32>,
+    selection_foreground: vec4<f32>,
+    selection_background: vec4<f32>,
+    // The 256-color palette, including the terminal's OSC 4 overrides.
+    palette: array<vec4<f32>, 256>,
 }
 
 @group(0) @binding(0) var<uniform> rio_frame: RioEffectFrame;
@@ -22,6 +37,7 @@ struct RioEffectFrame {
 @group(0) @binding(2) var rio_original: texture_2d<f32>;
 // Linear filtering, clamped to the edge.
 @group(0) @binding(3) var rio_sampler: sampler;
+@group(0) @binding(4) var<uniform> rio_theme: RioEffectTheme;
 
 struct RioEffectVertexOut {
     @builtin(position) position: vec4<f32>,
