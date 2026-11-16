@@ -213,6 +213,7 @@ Porting a shader still requires WGSL translation and input/color/coordinate mapp
    - Demonstrate: launch the installed binary → add a new external shader → configure it → save and display it → edit its visual formula, without rebuilding or restarting Rio.
    - Demonstrate image distortion/recoloring, a two-pass blur/glow, focus/theme reactions, and cursor-independent animation entirely in external WGSL. Implement an additional effect unknown to Rio using the same external API. Removing all trail/spark/slash examples must leave the application build and generic infrastructure tests functional, with no effect-specific Rust or embedded shaders.
    - Verify the same shader files work on Windows and macOS.
+   - Status: user documentation is `misc/effects/README.md`. Remaining: the installed-binary walkthrough, the same-files check on macOS for M1–M4 additions (focus/theme, params, cursor, typing on Metal), Japanese IME, and performance measurements.
 
 ### Validation
 
