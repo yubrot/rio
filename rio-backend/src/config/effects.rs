@@ -45,8 +45,8 @@ pub struct CustomEffects {
 pub struct CustomShader {
     /// WGSL file; relative paths resolve against the config directory.
     pub path: String,
-    /// Shader ABI the file targets. Checked when loading so a mismatch
-    /// disables only this shader instead of rejecting the whole config.
+    /// Shader ABI the file targets; unspecified means the latest. Checked
+    /// when loading so a mismatch disables only this shader.
     #[serde(default, rename = "api-version")]
     pub api_version: Option<u32>,
     /// Named values for the shader's `EffectParams` struct.

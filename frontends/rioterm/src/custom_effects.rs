@@ -28,18 +28,12 @@ fn load_sources(
     for shader in &custom.shaders {
         let path = resolve(config_dir, &shader.path);
         let name = path.display().to_string();
-        match shader.api_version {
-            Some(API_VERSION) => {}
-            Some(v) => {
-                errors.push(format!(
-                    "{name}: api-version {v} is not supported (expected {API_VERSION})"
-                ));
-                continue;
-            }
-            None => {
-                errors.push(format!("{name}: api-version is required"));
-                continue;
-            }
+        // Unspecified targets the latest ABI.
+        if let Some(v) = shader.api_version.filter(|&v| v != API_VERSION) {
+            errors.push(format!(
+                "{name}: api-version {v} is not supported (expected {API_VERSION})"
+            ));
+            continue;
         }
         if !shader.params.is_empty() {
             tracing::warn!("{name}: shader params are not supported yet; ignoring them");
@@ -110,8 +104,8 @@ mod tests {
         };
         let (sources, errors) = load_sources(&custom, &dir);
         std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(sources.len(), 1);
-        assert_eq!(sources[0].source, "// ok");
-        assert_eq!(errors.len(), 3, "{errors:?}");
+        assert_eq!(sources.len(), 2);
+        assert!(sources.iter().all(|s| s.source == "// ok"));
+        assert_eq!(errors.len(), 2, "{errors:?}");
     }
 }
