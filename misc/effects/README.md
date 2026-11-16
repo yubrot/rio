@@ -114,8 +114,9 @@ See `sugarloaf/src/effects/prelude.wgsl` for the exact declarations.
   scrollbar, tabs, or other window UI.
 - Sampling outside the panel clamps to its edge.
 - The cursor history and typing events are per panel. They reset when the
-  panel is resized or scrolled back. Switching tabs or splits never mixes
-  histories.
+  panel is resized, scrolled back, or switches to or from the alternate
+  screen. Switching tabs or splits never mixes histories.
+- On a wide (e.g. CJK) character the cursor `rect` spans both cells.
 - Typing events come from keys actually sent to the terminal (text, Enter,
   Backspace/Delete) and from IME commits (once per committed string). Paste,
   program output, key bindings, search, and Vi mode add none. A hidden cursor

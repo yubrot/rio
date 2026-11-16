@@ -463,7 +463,8 @@ pub struct EffectPanel {
     pub focused: bool,
     pub theme: EffectTheme,
     pub cursor: EffectCursor,
-    /// Changes when the view jumps (e.g. scrollback), resetting histories.
+    /// Changes when the view jumps (scrollback, alternate screen), resetting
+    /// histories.
     pub view: u64,
     /// Inputs sent to this panel since the previous frame, oldest first.
     pub typing: Vec<EffectTyping>,

@@ -399,6 +399,8 @@ pub fn panel_cursor(
     col: u16,
     row: u16,
     cell: [f32; 2],
+    // On the first half of a wide character; the cursor spans both cells.
+    wide: bool,
     shape: rio_backend::ansi::CursorShape,
     visible: bool,
     blink_on: bool,
@@ -414,7 +416,12 @@ pub fn panel_cursor(
         (_, CursorShape::Hidden) => 3,
     };
     EffectCursor {
-        rect: [col as f32 * cell[0], row as f32 * cell[1], cell[0], cell[1]],
+        rect: [
+            col as f32 * cell[0],
+            row as f32 * cell[1],
+            cell[0] * if wide { 2.0 } else { 1.0 },
+            cell[1],
+        ],
         color,
         shape,
         visible: visible && shape != 3,
@@ -447,6 +454,27 @@ fn effect_main(pos: vec2<f32>) -> vec4<f32> {
             .join(format!("rio-effects-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn wide_cursors_span_two_cells() {
+        use rio_backend::ansi::CursorShape;
+        let cursor = |wide| {
+            panel_cursor(
+                3,
+                2,
+                [10.0, 20.0],
+                wide,
+                CursorShape::Beam,
+                true,
+                true,
+                false,
+                [1.0; 4],
+            )
+        };
+        assert_eq!(cursor(false).rect, [30.0, 40.0, 10.0, 20.0]);
+        assert_eq!(cursor(true).rect, [30.0, 40.0, 20.0, 20.0]);
+        assert_eq!(cursor(true).shape, 2);
     }
 
     #[test]

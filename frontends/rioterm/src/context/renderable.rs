@@ -107,6 +107,8 @@ pub struct RenderableContent {
     /// `true` when the terminal was in Vi mode at snapshot time, so
     /// the cursor is drawn with the `vi-cursor` color.
     pub is_vi_mode: bool,
+    /// `true` when the alternate screen was active at snapshot time.
+    pub is_alt_screen: bool,
     /// Kitty graphics state captured under the snapshot lock. Owned
     /// here so the kitty overlay path doesn't need to lock again.
     pub kitty_virtual_placements: FxHashMap<(u32, u32), VirtualPlacement>,
@@ -142,6 +144,7 @@ impl RenderableContent {
             atlas_placements: Vec::new(),
             blinking_cursor: false,
             is_vi_mode: false,
+            is_alt_screen: false,
             kitty_virtual_placements: FxHashMap::default(),
             kitty_images: FxHashMap::default(),
             kitty_placements: Vec::new(),
@@ -211,6 +214,7 @@ impl RenderableContent {
         self.blinking_cursor = terminal.blinking_cursor;
         self.cursor.state = terminal.cursor();
         self.is_vi_mode = terminal.mode().contains(Mode::VI);
+        self.is_alt_screen = terminal.mode().contains(Mode::ALT_SCREEN);
         if terminal.graphics.kitty_graphics_dirty {
             self.kitty_virtual_placements =
                 terminal.graphics.kitty_virtual_placements.clone();

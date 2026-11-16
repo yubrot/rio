@@ -4224,6 +4224,8 @@ impl Screen<'_> {
                 /// Resolved by `Renderer::cursor_color`. Per-panel
                 /// because each terminal can issue its own OSC 12.
                 cursor_color: rio_backend::config::colors::ColorArray,
+                /// Alternate screen active; switching it resets effect histories.
+                is_alt_screen: bool,
                 is_active: bool,
                 damage: rio_backend::event::TerminalDamage,
                 /// Selection is per-context (`renderable_content`), not
@@ -4399,6 +4401,7 @@ impl Screen<'_> {
                     cursor_blink_visible,
                     cursor_preedit,
                     cursor_color,
+                    is_alt_screen: ctx.renderable_content.is_alt_screen,
                     is_active,
                     damage,
                     selection,
@@ -4825,13 +4828,20 @@ impl Screen<'_> {
                             p.cursor_col,
                             p.cursor_row,
                             [p.cell_w, p.cell_h],
+                            p.visible_rows
+                                .get(p.cursor_row as usize)
+                                .and_then(|row| row.inner.get(p.cursor_col as usize))
+                                .is_some_and(|sq| {
+                                    sq.wide()
+                                        == rio_backend::crosswords::square::Wide::Wide
+                                }),
                             p.cursor_shape,
                             p.cursor_visible && p.display_offset == 0,
                             p.cursor_blink_visible,
                             p.cursor_preedit,
                             p.cursor_color,
                         ),
-                        view: p.display_offset as u64,
+                        view: p.display_offset as u64 | (p.is_alt_screen as u64) << 63,
                         typing: self
                             .typing_inputs
                             .iter()

@@ -41,7 +41,7 @@ struct RioEffectTheme {
 
 // Cursor geometry is in panel-local physical pixels, top-left origin.
 struct RioCursor {
-    // x, y, width, height of the cursor cell.
+    // x, y, width, height of the cursor cell (both cells of a wide character).
     rect: vec4<f32>,
     // Linear premultiplied.
     color: vec4<f32>,
@@ -71,7 +71,8 @@ struct RioEffectCursor {
     change_time: f32,
     // Valid entries in `history`.
     history_len: u32,
-    // Recent positions, newest first. Cleared on resize and scrollback.
+    // Recent positions, newest first. Cleared on resize, scrollback, and
+    // alternate-screen switches.
     history: array<RioCursorSample, 64>,
 }
 
@@ -93,8 +94,8 @@ struct RioTypingEvent {
 struct RioEffectEvents {
     // Valid entries in `typing`.
     typing_len: u32,
-    // Recent inputs sent to the terminal, newest first. Cleared on resize
-    // and scrollback, like the cursor history.
+    // Recent inputs sent to the terminal, newest first. Cleared along with
+    // the cursor history.
     typing: array<RioTypingEvent, 64>,
 }
 

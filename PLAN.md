@@ -5,8 +5,6 @@
 ### Remaining implementation work
 
 - Handle device-loss recovery.
-- Reset cursor history on alternate-screen switches.
-- Report the full width of wide-cell cursors.
 
 ### Remaining regression checks
 
