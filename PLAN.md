@@ -10,8 +10,6 @@
 
 ### Remaining regression checks
 
-- Demonstrate: launch the installed binary → add a new external shader → configure it → save and display it → edit its visual formula, without rebuilding or restarting Rio.
-- Demonstrate image distortion/recoloring and a two-pass blur/glow entirely in external WGSL. Implement an additional effect unknown to Rio using the same external API.
 - Verify that removing all trail/spark/slash examples leaves the application build and generic infrastructure tests functional, with no effect-specific Rust or embedded shaders.
 
 ### Performance measurements
