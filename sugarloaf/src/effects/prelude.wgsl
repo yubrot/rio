@@ -77,6 +77,29 @@ struct RioEffectCursor {
 
 @group(0) @binding(5) var<uniform> rio_cursor: RioEffectCursor;
 
+struct RioTypingEvent {
+    // Cursor cell displayed when the input happened.
+    rect: vec4<f32>,
+    // `rio_frame.time` of the input.
+    time: f32,
+    // Increases by one per event in this panel.
+    seq: u32,
+    // Random bits for this event.
+    seed: u32,
+    // 0 = text, 1 = Enter, 2 = Backspace/Delete, 3 = IME commit.
+    kind: u32,
+}
+
+struct RioEffectEvents {
+    // Valid entries in `typing`.
+    typing_len: u32,
+    // Recent inputs sent to the terminal, newest first. Cleared on resize
+    // and scrollback, like the cursor history.
+    typing: array<RioTypingEvent, 64>,
+}
+
+@group(0) @binding(6) var<uniform> rio_events: RioEffectEvents;
+
 struct RioEffectVertexOut {
     @builtin(position) position: vec4<f32>,
 }

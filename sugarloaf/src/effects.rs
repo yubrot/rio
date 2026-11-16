@@ -252,12 +252,13 @@ fn shader_color(c: [f32; 4], colorspace: Colorspace) -> [f32; 4] {
 
 /// Bindings of the per-panel uniform blocks, in [`PanelUniforms::blocks`]
 /// order. On Metal block `i` is buffer slot `i`.
-pub(crate) const UNIFORM_BINDINGS: [u32; 3] = [0, 4, 5];
+pub(crate) const UNIFORM_BINDINGS: [u32; 4] = [0, 4, 5, 6];
 #[cfg(any(feature = "wgpu", test))]
-pub(crate) const UNIFORM_SIZES: [usize; 3] = [
+pub(crate) const UNIFORM_SIZES: [usize; 4] = [
     std::mem::size_of::<EffectFrameUniform>(),
     THEME_SIZE,
     std::mem::size_of::<CursorUniform>(),
+    std::mem::size_of::<EventsUniform>(),
 ];
 
 /// Metal buffer slot of the `@group(1)` parameter struct.
@@ -266,7 +267,55 @@ pub(crate) const PARAMS_SLOT: usize = UNIFORM_BINDINGS.len();
 
 /// Per-panel uniform data for one frame.
 pub(crate) struct PanelUniforms {
-    pub blocks: [Vec<u8>; 3],
+    pub blocks: [Vec<u8>; 4],
+}
+
+/// Entries kept in `rio_events.typing`.
+pub const TYPING_HISTORY: usize = 64;
+
+/// What an input sent to the terminal was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum TypingKind {
+    Text = 0,
+    Enter = 1,
+    /// Backspace or Delete.
+    Erase = 2,
+    /// A committed IME string.
+    Ime = 3,
+}
+
+/// One input sent to a panel's terminal since the previous frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EffectTyping {
+    pub kind: TypingKind,
+    pub at: std::time::Instant,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
+struct TypingSample {
+    rect: [f32; 4],
+    time: f32,
+    seq: u32,
+    seed: u32,
+    kind: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct EventsUniform {
+    typing_len: u32,
+    _pad: [u32; 3],
+    typing: [TypingSample; TYPING_HISTORY],
+}
+
+/// SplitMix64, for per-event seeds.
+fn mix_seed(mut x: u64) -> u32 {
+    x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    (x ^ (x >> 31)) as u32
 }
 
 /// Entries kept in `rio_cursor.history`.
@@ -414,8 +463,10 @@ pub struct EffectPanel {
     pub focused: bool,
     pub theme: EffectTheme,
     pub cursor: EffectCursor,
-    /// Changes when the view jumps (e.g. scrollback), resetting cursor history.
+    /// Changes when the view jumps (e.g. scrollback), resetting histories.
     pub view: u64,
+    /// Inputs sent to this panel since the previous frame, oldest first.
+    pub typing: Vec<EffectTyping>,
 }
 
 impl EffectPanel {
@@ -467,6 +518,9 @@ struct PanelState {
     /// Last converted theme, reused while the input is unchanged.
     theme: (EffectTheme, Vec<u8>),
     cursor: Option<CursorTrack>,
+    /// Newest first.
+    typing: std::collections::VecDeque<TypingSample>,
+    typing_seq: u32,
 }
 
 /// Timing of one rendered frame.
@@ -497,6 +551,8 @@ impl EffectHost {
             focus_time: t.time,
             theme: (panel.theme.clone(), panel.theme.to_uniform(colorspace)),
             cursor: None,
+            typing: std::collections::VecDeque::with_capacity(TYPING_HISTORY),
+            typing_seq: 0,
         });
         if state.focused != panel.focused {
             state.focused = panel.focused;
@@ -526,16 +582,44 @@ impl EffectHost {
             time: t.time,
         };
         let view = (panel.view, [rect[2], rect[3]]);
+        if state.cursor.as_ref().is_some_and(|c| c.view != view) {
+            state.typing.clear();
+        }
+        // Inputs land where the cursor was displayed, before this frame moves it.
+        let shown = state.cursor.as_ref().map_or(c.rect, |c| c.current.rect);
+        for input in &panel.typing {
+            if state.typing.len() == TYPING_HISTORY {
+                state.typing.pop_back();
+            }
+            state.typing_seq = state.typing_seq.wrapping_add(1);
+            let seq = state.typing_seq;
+            state.typing.push_front(TypingSample {
+                rect: shown,
+                time: self.clock.time_of(input.at),
+                seq,
+                seed: mix_seed(((panel.id as u64) << 32) | seq as u64),
+                kind: input.kind as u32,
+            });
+        }
         match &mut state.cursor {
             Some(track) => track.update(view, cursor, t.time),
             None => state.cursor = Some(CursorTrack::new(view, cursor, t.time)),
         }
         let cursor = state.cursor.as_ref().map(CursorTrack::to_uniform);
+        let mut events = EventsUniform {
+            typing_len: state.typing.len() as u32,
+            _pad: [0; 3],
+            typing: [TypingSample::default(); TYPING_HISTORY],
+        };
+        for (slot, sample) in events.typing.iter_mut().zip(&state.typing) {
+            *slot = *sample;
+        }
         PanelUniforms {
             blocks: [
                 bytemuck::bytes_of(&frame).to_vec(),
                 state.theme.1.clone(),
                 cursor.map_or_else(Vec::new, |c| bytemuck::bytes_of(&c).to_vec()),
+                bytemuck::bytes_of(&events).to_vec(),
             ],
         }
     }
@@ -565,6 +649,11 @@ impl Default for EffectClock {
 }
 
 impl EffectClock {
+    /// Clock time of `at`; instants before the start map to 0.
+    fn time_of(&self, at: std::time::Instant) -> f32 {
+        at.saturating_duration_since(self.start).as_secs_f32()
+    }
+
     /// Advance one rendered frame: `(time, time_delta, frame)`.
     pub fn tick(&mut self) -> (f32, f32, u32) {
         let now = std::time::Instant::now();
@@ -911,6 +1000,7 @@ fn effect_main(pos: vec2<f32>) -> vec4<f32> {
             theme: EffectTheme::default(),
             cursor: EffectCursor::default(),
             view: 0,
+            typing: Vec::new(),
         };
         let frame = |host: &mut EffectHost, panel: &EffectPanel, time| {
             let t = FrameTime {
@@ -942,6 +1032,7 @@ fn effect_main(pos: vec2<f32>) -> vec4<f32> {
                 ..Default::default()
             },
             view: 0,
+            typing: Vec::new(),
         };
         let frame = |host: &mut EffectHost, panel: &EffectPanel, time| {
             let t = FrameTime {
@@ -975,6 +1066,55 @@ fn effect_main(pos: vec2<f32>) -> vec4<f32> {
     }
 
     #[test]
+    fn typing_events_use_the_displayed_cursor() {
+        let mut host = EffectHost::default();
+        let start = host.clock.start;
+        let mut panel = EffectPanel {
+            id: 7,
+            rect: [0.0, 0.0, 10.0, 10.0],
+            cell_size: [1.0, 1.0],
+            focused: true,
+            theme: EffectTheme::default(),
+            cursor: EffectCursor::default(),
+            view: 0,
+            typing: Vec::new(),
+        };
+        let frame = |host: &mut EffectHost, panel: &EffectPanel| {
+            let t = FrameTime {
+                time: 9.0,
+                delta: 0.0,
+                frame: 0,
+            };
+            let u = host.uniforms(t, panel, [0, 0, 10, 10], 1.0, Colorspace::DisplayP3);
+            bytemuck::pod_read_unaligned::<EventsUniform>(&u.blocks[3])
+        };
+        frame(&mut host, &panel);
+        // Typed at cell 0; the echo moved the cursor to cell 1 in the same frame.
+        panel.cursor.rect = [1.0, 0.0, 1.0, 1.0];
+        let at = start + std::time::Duration::from_millis(1500);
+        panel.typing = vec![
+            EffectTyping {
+                kind: TypingKind::Text,
+                at,
+            },
+            EffectTyping {
+                kind: TypingKind::Enter,
+                at,
+            },
+        ];
+        let e = frame(&mut host, &panel);
+        assert_eq!(e.typing_len, 2);
+        let (newest, oldest) = (e.typing[0], e.typing[1]);
+        assert_eq!((newest.kind, newest.seq, oldest.seq), (1, 2, 1));
+        assert_eq!((newest.rect[0], newest.time), (0.0, 1.5));
+        assert_ne!(newest.seed, oldest.seed);
+
+        panel.typing.clear();
+        panel.view = 1;
+        assert_eq!(frame(&mut host, &panel).typing_len, 0);
+    }
+
+    #[test]
     fn panel_projection_maps_corners() {
         let m = panel_projection([100.0, 50.0, 200.0, 100.0]);
         let ndc = |x: f32, y: f32| (m[0] * x + m[12], m[5] * y + m[13]);
@@ -992,6 +1132,7 @@ fn effect_main(pos: vec2<f32>) -> vec4<f32> {
             theme: EffectTheme::default(),
             cursor: EffectCursor::default(),
             view: 0,
+            typing: Vec::new(),
         };
         assert_eq!(p.clipped_rect((500.0, 500.0)), Some([10, 20, 490, 30]));
         assert_eq!(p.clipped_rect((5.0, 5.0)), None);

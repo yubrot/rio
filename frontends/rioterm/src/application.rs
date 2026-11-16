@@ -2251,6 +2251,12 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                         if route.modal_owns_input() {
                             return;
                         }
+                        // Search consumes commits as its own input.
+                        if !route.window.screen.search_active() {
+                            route.window.screen.record_typing(
+                                rio_backend::sugarloaf::effects::TypingKind::Ime,
+                            );
+                        }
                         // Don't use bracketed paste for single char input.
                         route.window.screen.paste(&text, text.chars().count() > 1);
                     }

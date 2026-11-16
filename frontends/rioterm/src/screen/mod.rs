@@ -109,6 +109,9 @@ pub struct Screen<'screen> {
     effect_frame_interval: Option<std::time::Duration>,
     /// Set before each render; minimized windows suspend effect frames.
     pub window_minimized: bool,
+    /// Inputs sent to terminals since the last frame, keyed by panel, for
+    /// custom effects. Recorded only while effects run.
+    typing_inputs: Vec<(usize, rio_backend::sugarloaf::effects::EffectTyping)>,
 }
 
 pub struct ChromePress {
@@ -382,6 +385,7 @@ impl Screen<'_> {
             grid_rasterizer: rio_grid::GridGlyphRasterizer::new(),
             effect_frame_interval: effect_frame_interval(config),
             window_minimized: false,
+            typing_inputs: Vec::new(),
         })
     }
 
@@ -1009,8 +1013,42 @@ impl Screen<'_> {
             self.scroll_bottom_when_cursor_not_visible();
             self.clear_selection();
 
+            use rio_backend::sugarloaf::effects::TypingKind;
+            let kind = match key.logical_key.as_ref() {
+                Key::Named(NamedKey::Enter) => Some(TypingKind::Enter),
+                Key::Named(NamedKey::Backspace | NamedKey::Delete) => {
+                    Some(TypingKind::Erase)
+                }
+                _ if ctrl_c0.is_none()
+                    && !text.is_empty()
+                    && !text.chars().any(char::is_control) =>
+                {
+                    Some(TypingKind::Text)
+                }
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                self.record_typing(kind);
+            }
+
             self.ctx_mut().current_mut().messenger.send_write(bytes);
         }
+    }
+
+    /// Record an input sent to the current terminal for custom effects.
+    pub fn record_typing(&mut self, kind: rio_backend::sugarloaf::effects::TypingKind) {
+        // Bounded: frames drain this, and only a few events per frame matter.
+        if !self.sugarloaf.has_effects() || self.typing_inputs.len() >= 256 {
+            return;
+        }
+        let panel = self.context_manager.current().rich_text_id;
+        self.typing_inputs.push((
+            panel,
+            rio_backend::sugarloaf::effects::EffectTyping {
+                kind,
+                at: std::time::Instant::now(),
+            },
+        ));
     }
 
     /// Check whether we should try to build escape sequence for the [`KeyEvent`].
@@ -4794,9 +4832,18 @@ impl Screen<'_> {
                             p.cursor_color,
                         ),
                         view: p.display_offset as u64,
+                        typing: self
+                            .typing_inputs
+                            .iter()
+                            .filter(|(id, _)| *id == p.rich_text_id)
+                            .map(|(_, t)| *t)
+                            .collect(),
                     });
                 }
             }
+
+            // Inputs of panels not shown this frame are dropped.
+            self.typing_inputs.clear();
 
             if should_present {
                 if frame_grids.is_empty() {

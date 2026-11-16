@@ -203,10 +203,11 @@ Porting a shader still requires WGSL translation and input/color/coordinate mapp
    - Create external `cursor-trail.wgsl` with configurable width, fading, and color.
    - Add an external stationary/time-based example and shader-side focus gating. Complete when visible chains animate without terminal damage, unfocused visible panels continue executing, hidden panels suspend, all passes remain applied, and tab/split changes never mix histories.
    - Status: `rio_cursor` (binding 5) carries the current/previous cursor, move/change times, and a 64-entry history, tracked per panel and reset on resize and scrollback. Effect frames are scheduled through `RenderRoute` at `max-fps` (so unfocused/occluded gates and vsync throttling apply) and stop while minimized; `game` renders every frame itself. Examples: `cursor-trail.wgsl`, `focus-pulse.wgsl`. Not yet: alternate-screen switches do not reset history, and wide-cell cursors report one cell.
-4. [ ] **Typing events and external examples**
+4. [x] **Typing events and external examples**
    - Collect ordinary input and IME commits, distinguishing paste and PTY output.
    - Create external `typing-sparks.wgsl` and `typing-slash.wgsl`, and tune their composition with the trail example.
    - Complete when rapid input, repeat, and Japanese IME produce appropriate events, external shaders end their visuals according to their own duration parameters, and text/cursor readability is preserved.
+   - Status: `rio_events` (binding 6) holds the last 64 inputs per panel, newest first, each with the displayed cursor cell, time, sequence number, seed, and kind (text, Enter, Backspace/Delete, IME commit). Key presses are recorded where bytes go to the PTY (not in search, hints, Vi mode, or bindings); IME commits once each; paste and PTY output never. Examples: `typing-sparks.wgsl`, `typing-slash.wgsl`. Japanese IME has not been tried interactively yet.
 5. [ ] **Regression checks and user documentation**
    - Document configuration, named parameter contracts, WGSL ABI, installation, reload, diagnostics, and unsupported backends.
    - Demonstrate: launch the installed binary → add a new external shader → configure it → save and display it → edit its visual formula, without rebuilding or restarting Rio.
