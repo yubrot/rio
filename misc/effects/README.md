@@ -155,16 +155,40 @@ See `sugarloaf/src/effects/prelude.wgsl` for the exact declarations.
 
 ## Examples
 
-| File | What it does | Parameters |
+Each example shows a different part of the API. Parameter values below are
+starting points.
+
+| File | What it does | Shows |
 | --- | --- | --- |
-| `identity.wgsl` | Passes the panel through | — |
-| `wave.wgsl` | Shifts rows along an animated sine wave | — |
-| `blur-h.wgsl`, `blur-v.wgsl` | Two-pass Gaussian blur; use both in this order | — |
-| `glow.wgsl` | Adds the blurred input over the original; use after the blur pair | — |
-| `split-compare.wgsl` | Debug: left half shows the chain so far, right half the original | — |
-| `focus-dim.wgsl` | Fades unfocused panels toward the theme background | — |
-| `tint.wgsl` | Multiplies the panel by a color | `color` (vec3), `strength` (0–1) |
-| `focus-pulse.wgsl` | Pulsing border on the focused panel | `color`, `period` (s), `thickness` (px) |
-| `cursor-trail.wgsl` | Fading trail along recent cursor positions | `color`, `width` (0–1 of cell height), `duration` (s) |
-| `typing-sparks.wgsl` | Sparks from the cursor on each keystroke | `color`, `intensity` (0–1), `speed` (px/s), `duration` (s) |
-| `typing-slash.wgsl` | Diagonal slash per keystroke; longer for Enter and IME | `color`, `length` (cells), `duration` (s) |
+| `wave.wgsl` | Shifts rows along an animated sine wave | `time`, `cell_size`, sampling with `rio_sampler` |
+| `blur-h.wgsl`, `blur-v.wgsl`, `glow.wgsl` | Glow; use all three in this order | Multi-pass chains, `rio_original` |
+| `duotone.wgsl` | Recolors the panel with the background and a palette color | `rio_theme.palette`, foreground/background |
+| `focus-dim.wgsl` | Fades unfocused panels toward the background | `focused`, `focus_time` |
+| `cursor-trail.wgsl` | Fading trail along recent cursor positions | `rio_cursor.history` |
+| `cursor-glide.wgsl` | Glides the cursor between cells; a ring on shape or color changes | `current`, `previous`, `shape`, `move_time`, `change_time` |
+| `typing-sparks.wgsl` | Sparks per keystroke; bursts on Enter/IME, implodes on Backspace | `rio_events.typing`, `seed`, `kind` |
+
+```toml
+[[effects.custom.shaders]]
+path = "effects/duotone.wgsl"
+params = { palette_index = 4, strength = 0.6 }
+
+[[effects.custom.shaders]]
+path = "effects/focus-dim.wgsl"
+params = { amount = 0.5, fade = 0.2 }
+
+[[effects.custom.shaders]]
+path = "effects/cursor-trail.wgsl"
+params = { color = [0.75, 0.4, 1.0, 1.0], width = 1.0, duration = 0.3 }
+
+[[effects.custom.shaders]]
+path = "effects/cursor-glide.wgsl"
+params = { duration = 0.12, opacity = 0.8 }
+
+[[effects.custom.shaders]]
+path = "effects/typing-sparks.wgsl"
+params = { color = [1.0, 0.8, 0.3, 1.0], intensity = 0.5, speed = 120.0, duration = 0.24 }
+```
+
+`wave.wgsl` and the glow passes take no parameters. Each shader file
+documents its parameters at the top.

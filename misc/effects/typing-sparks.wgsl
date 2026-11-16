@@ -1,4 +1,5 @@
-// Throws sparks from the cursor on each keystroke.
+// Throws sparks from the cursor on each keystroke. Enter and IME commits
+// throw a bigger burst; Backspace/Delete pulls sparks in instead.
 //
 // Parameters:
 //   color     = [r, g, b, a]    Linear premultiplied spark color
@@ -42,11 +43,16 @@ fn effect_main(pos: vec2<f32>) -> vec4<f32> {
             break;
         }
         let life = 1.0 - age / params.duration;
+        let burst = event.kind == 1u || event.kind == 3u;
+        let count = select(SPARKS, SPARKS * 2u, burst);
+        let reach = select(1.0, 1.6, burst);
+        // Deletions run the motion backwards, from the outside in.
+        let travel = select(age, params.duration - age, event.kind == 2u);
         let origin = event.rect.xy + event.rect.zw * 0.5;
-        for (var k = 0u; k < SPARKS; k++) {
-            let angle = rand(event.seed, k) * 6.2831853;
-            let speed = params.speed * (0.4 + 0.6 * rand(event.seed, k + SPARKS));
-            let p = origin + vec2<f32>(cos(angle), sin(angle)) * speed * age;
+        for (var k = 0u; k < count; k++) {
+            let angle = rand(event.seed, 2u * k) * 6.2831853;
+            let speed = params.speed * reach * (0.4 + 0.6 * rand(event.seed, 2u * k + 1u));
+            let p = origin + vec2<f32>(cos(angle), sin(angle)) * speed * travel;
             let radius = 1.5 * rio_frame.scale * life;
             glow += clamp(radius - length(pos - p) + 0.5, 0.0, 1.0) * life;
         }
