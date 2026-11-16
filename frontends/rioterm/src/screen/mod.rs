@@ -104,6 +104,11 @@ pub struct Screen<'screen> {
     last_close_press: Option<(std::time::Instant, f32)>,
     pub grids: rustc_hash::FxHashMap<usize, rio_backend::sugarloaf::grid::GridRenderer>,
     pub grid_rasterizer: rio_grid::GridGlyphRasterizer,
+    /// Frame interval for running custom effects continuously (`max-fps`),
+    /// or `None` when the `game` strategy already renders every frame.
+    effect_frame_interval: Option<std::time::Duration>,
+    /// Set before each render; minimized windows suspend effect frames.
+    pub window_minimized: bool,
 }
 
 pub struct ChromePress {
@@ -129,6 +134,16 @@ pub struct ScreenWindowProperties {
     pub window_id: rio_window::window::WindowId,
     /// Set when Rio draws the title bar itself.
     pub titlebar: Option<crate::renderer::titlebar::Titlebar>,
+}
+
+fn effect_frame_interval(
+    config: &rio_backend::config::Config,
+) -> Option<std::time::Duration> {
+    config
+        .renderer
+        .strategy
+        .is_event_based()
+        .then(|| std::time::Duration::from_secs(1) / config.effects.custom.max_fps())
 }
 
 #[inline]
@@ -365,6 +380,8 @@ impl Screen<'_> {
             last_close_press: None,
             grids: rustc_hash::FxHashMap::default(),
             grid_rasterizer: rio_grid::GridGlyphRasterizer::new(),
+            effect_frame_interval: effect_frame_interval(config),
+            window_minimized: false,
         })
     }
 
@@ -555,6 +572,7 @@ impl Screen<'_> {
         #[cfg(wgpu_backend)]
         self.sugarloaf
             .update_filters(config.renderer.filters.as_slice());
+        self.effect_frame_interval = effect_frame_interval(config);
 
         // Rebuild bindings so `[bindings]` edits live-reload like the
         // rest of the config instead of waiting for a new window.
@@ -4000,6 +4018,7 @@ impl Screen<'_> {
     }
 
     pub(crate) fn render(&mut self) -> Option<crate::context::renderable::WindowUpdate> {
+        let frame_start = std::time::Instant::now();
         self.update_close_button_hover(self.mouse.x, self.mouse.y);
         if self.renderer.is_window_focused {
             self.context_manager.clear_current_bell();
@@ -4102,7 +4121,10 @@ impl Screen<'_> {
         // it earlier would fail to schedule the continuation frame,
         // freezing the trail mid-flight until unrelated damage arrives.
         let has_animation = self.renderer.needs_redraw();
-        let should_present = any_panel_dirty || has_animation;
+        // Continuously running effects present even without terminal damage.
+        let effects_running =
+            self.effect_frame_interval.is_some() && self.sugarloaf.has_effects();
+        let should_present = any_panel_dirty || has_animation || effects_running;
 
         // Phase 2.2/2.3: per-panel CellBg + CellText emission with
         // per-row dirty gating. Iterates every panel in the active
@@ -4761,6 +4783,17 @@ impl Screen<'_> {
                             &p.term_colors,
                             p.cursor_color,
                         ),
+                        cursor: crate::custom_effects::panel_cursor(
+                            p.cursor_col,
+                            p.cursor_row,
+                            [p.cell_w, p.cell_h],
+                            p.cursor_shape,
+                            p.cursor_visible && p.display_offset == 0,
+                            p.cursor_blink_visible,
+                            p.cursor_preedit,
+                            p.cursor_color,
+                        ),
+                        view: p.display_offset as u64,
                     });
                 }
             }
@@ -4822,6 +4855,18 @@ impl Screen<'_> {
                 .renderable_content
                 .pending_update
                 .set_dirty();
+        }
+
+        // Custom effects run every frame while the window shows them, paced
+        // by `max-fps`. Renders this schedules pass the same unfocused /
+        // occluded gates as terminal output.
+        if let Some(interval) = self.effect_frame_interval.filter(|_| effects_running) {
+            let size = self.sugarloaf.window_size();
+            if !self.window_minimized && size.width >= 1.0 && size.height >= 1.0 {
+                let wait = interval.saturating_sub(frame_start.elapsed());
+                self.context_manager
+                    .schedule_render_on_route(wait.as_millis().max(1) as u64);
+            }
         }
 
         if let Some(wake_in) = self.renderer.scrollbar.next_wake_in() {

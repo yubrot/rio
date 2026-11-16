@@ -39,6 +39,44 @@ struct RioEffectTheme {
 @group(0) @binding(3) var rio_sampler: sampler;
 @group(0) @binding(4) var<uniform> rio_theme: RioEffectTheme;
 
+// Cursor geometry is in panel-local physical pixels, top-left origin.
+struct RioCursor {
+    // x, y, width, height of the cursor cell.
+    rect: vec4<f32>,
+    // Linear premultiplied.
+    color: vec4<f32>,
+    // 0 = block, 1 = underline, 2 = beam, 3 = hidden.
+    shape: u32,
+    // 1 unless the terminal hides the cursor or the view is scrolled back.
+    visible: u32,
+    // 1 during the visible half of a blink cycle (always 1 without blink).
+    blink_on: u32,
+    // `rio_frame.time` at which this state began.
+    time: f32,
+}
+
+struct RioCursorSample {
+    rect: vec4<f32>,
+    // `rio_frame.time` at which the cursor arrived at `rect`.
+    time: f32,
+}
+
+struct RioEffectCursor {
+    current: RioCursor,
+    // The state before the last position or appearance change.
+    previous: RioCursor,
+    // Time of the last position change.
+    move_time: f32,
+    // Time of the last shape, color, or visibility change.
+    change_time: f32,
+    // Valid entries in `history`.
+    history_len: u32,
+    // Recent positions, newest first. Cleared on resize and scrollback.
+    history: array<RioCursorSample, 64>,
+}
+
+@group(0) @binding(5) var<uniform> rio_cursor: RioEffectCursor;
+
 struct RioEffectVertexOut {
     @builtin(position) position: vec4<f32>,
 }

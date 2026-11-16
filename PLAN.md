@@ -198,10 +198,11 @@ Porting a shader still requires WGSL translation and input/color/coordinate mapp
    - Implement startup/configuration loading, watches, and preservation of the last valid state.
    - Complete when saving shader code or named values updates the same running process, invalid parameters produce useful errors, and fixing errors restores operation.
    - Status: a loader thread reads, validates, and packs shaders, watching their parent directories (debounced); windows install the latest chain on a `CustomEffectsChanged` event, reusing pipelines whose WGSL is unchanged. Errors go to the log and a non-modal warning toast, cleared on recovery. File watching does not see changes under `\\wsl.localhost` paths from Windows. Device-loss recovery is not handled yet.
-3. [ ] **Continuous execution and cursor history**
+3. [x] **Continuous execution and cursor history**
    - Add per-panel frontend state and supply actual cursor geometry/history.
    - Create external `cursor-trail.wgsl` with configurable width, fading, and color.
    - Add an external stationary/time-based example and shader-side focus gating. Complete when visible chains animate without terminal damage, unfocused visible panels continue executing, hidden panels suspend, all passes remain applied, and tab/split changes never mix histories.
+   - Status: `rio_cursor` (binding 5) carries the current/previous cursor, move/change times, and a 64-entry history, tracked per panel and reset on resize and scrollback. Effect frames are scheduled through `RenderRoute` at `max-fps` (so unfocused/occluded gates and vsync throttling apply) and stop while minimized; `game` renders every frame itself. Examples: `cursor-trail.wgsl`, `focus-pulse.wgsl`. Not yet: alternate-screen switches do not reset history, and wide-cell cursors report one cell.
 4. [ ] **Typing events and external examples**
    - Collect ordinary input and IME commits, distinguishing paste and PTY output.
    - Create external `typing-sparks.wgsl` and `typing-slash.wgsl`, and tune their composition with the trail example.

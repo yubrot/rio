@@ -2407,6 +2407,8 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                         route.window.screen.render_welcome();
                     }
                     RoutePath::Terminal => {
+                        route.window.screen.window_minimized =
+                            route.window.winit_window.is_minimized().unwrap_or(false);
                         if let Some(window_update) = route.window.screen.render() {
                             use crate::context::renderable::{
                                 BackgroundState, WindowUpdate,

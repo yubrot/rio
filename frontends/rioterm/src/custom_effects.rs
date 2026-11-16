@@ -7,8 +7,8 @@ use rio_backend::config::colors::term::TermColors;
 use rio_backend::config::colors::{ColorArray, NamedColor};
 use rio_backend::config::effects::{CustomEffects, CustomShader};
 use rio_backend::sugarloaf::effects::{
-    validate, EffectPass, EffectSource, EffectTheme, ParamValue, ValidatedEffect,
-    API_VERSION, MAX_PASSES,
+    validate, EffectCursor, EffectPass, EffectSource, EffectTheme, ParamValue,
+    ValidatedEffect, API_VERSION, MAX_PASSES,
 };
 use rio_backend::sugarloaf::Sugarloaf;
 use rustc_hash::FxHashMap;
@@ -391,6 +391,35 @@ pub fn panel_theme(
         *c = color(i);
     }
     theme
+}
+
+/// Displayed cursor of a panel, in panel-local pixels.
+#[allow(clippy::too_many_arguments)]
+pub fn panel_cursor(
+    col: u16,
+    row: u16,
+    cell: [f32; 2],
+    shape: rio_backend::ansi::CursorShape,
+    visible: bool,
+    blink_on: bool,
+    preedit: bool,
+    color: ColorArray,
+) -> EffectCursor {
+    use rio_backend::ansi::CursorShape;
+    // IME composition always shows a block.
+    let shape = match (preedit, shape) {
+        (true, _) | (_, CursorShape::Block) => 0,
+        (_, CursorShape::Underline) => 1,
+        (_, CursorShape::Beam) => 2,
+        (_, CursorShape::Hidden) => 3,
+    };
+    EffectCursor {
+        rect: [col as f32 * cell[0], row as f32 * cell[1], cell[0], cell[1]],
+        color,
+        shape,
+        visible: visible && shape != 3,
+        blink_on,
+    }
 }
 
 #[cfg(test)]

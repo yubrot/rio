@@ -252,10 +252,13 @@ fn shader_color(c: [f32; 4], colorspace: Colorspace) -> [f32; 4] {
 
 /// Bindings of the per-panel uniform blocks, in [`PanelUniforms::blocks`]
 /// order. On Metal block `i` is buffer slot `i`.
-pub(crate) const UNIFORM_BINDINGS: [u32; 2] = [0, 4];
+pub(crate) const UNIFORM_BINDINGS: [u32; 3] = [0, 4, 5];
 #[cfg(any(feature = "wgpu", test))]
-pub(crate) const UNIFORM_SIZES: [usize; 2] =
-    [std::mem::size_of::<EffectFrameUniform>(), THEME_SIZE];
+pub(crate) const UNIFORM_SIZES: [usize; 3] = [
+    std::mem::size_of::<EffectFrameUniform>(),
+    THEME_SIZE,
+    std::mem::size_of::<CursorUniform>(),
+];
 
 /// Metal buffer slot of the `@group(1)` parameter struct.
 #[cfg(any(target_os = "macos", test))]
@@ -263,7 +266,140 @@ pub(crate) const PARAMS_SLOT: usize = UNIFORM_BINDINGS.len();
 
 /// Per-panel uniform data for one frame.
 pub(crate) struct PanelUniforms {
-    pub blocks: [Vec<u8>; 2],
+    pub blocks: [Vec<u8>; 3],
+}
+
+/// Entries kept in `rio_cursor.history`.
+pub const CURSOR_HISTORY: usize = 64;
+
+/// Displayed cursor of a panel, in panel-local physical pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct EffectCursor {
+    /// `[x, y, width, height]` of the cursor cell.
+    pub rect: [f32; 4],
+    /// As configured (straight alpha, configured colorspace).
+    pub color: [f32; 4],
+    /// 0 = block, 1 = underline, 2 = beam, 3 = hidden.
+    pub shape: u32,
+    pub visible: bool,
+    pub blink_on: bool,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+struct CursorState {
+    rect: [f32; 4],
+    color: [f32; 4],
+    shape: u32,
+    visible: u32,
+    blink_on: u32,
+    time: f32,
+}
+
+impl CursorState {
+    /// Whether `other` differs in anything but blink phase and time.
+    fn appearance_differs(&self, other: &CursorState) -> bool {
+        (self.color, self.shape, self.visible)
+            != (other.color, other.shape, other.visible)
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
+struct CursorSample {
+    rect: [f32; 4],
+    time: f32,
+    _pad: [f32; 3],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct CursorUniform {
+    current: CursorState,
+    previous: CursorState,
+    move_time: f32,
+    change_time: f32,
+    history_len: u32,
+    _pad: u32,
+    history: [CursorSample; CURSOR_HISTORY],
+}
+
+/// Per-panel cursor tracking behind `rio_cursor`.
+#[derive(Debug)]
+struct CursorTrack {
+    /// Changes of this (scroll position, panel size) start a new history.
+    view: (u64, [u32; 2]),
+    current: CursorState,
+    previous: CursorState,
+    move_time: f32,
+    change_time: f32,
+    /// Newest first.
+    history: std::collections::VecDeque<CursorSample>,
+}
+
+impl CursorTrack {
+    fn new(view: (u64, [u32; 2]), state: CursorState, time: f32) -> Self {
+        let mut history = std::collections::VecDeque::with_capacity(CURSOR_HISTORY);
+        history.push_front(CursorSample {
+            rect: state.rect,
+            time,
+            _pad: [0.0; 3],
+        });
+        Self {
+            view,
+            current: state,
+            previous: state,
+            move_time: time,
+            change_time: time,
+            history,
+        }
+    }
+
+    fn update(&mut self, view: (u64, [u32; 2]), mut state: CursorState, time: f32) {
+        state.time = time;
+        if view != self.view {
+            *self = Self::new(view, state, time);
+            return;
+        }
+        let moved = state.rect != self.current.rect;
+        let changed = state.appearance_differs(&self.current);
+        if moved || changed {
+            self.previous = self.current;
+            self.current = state;
+        } else {
+            self.current.blink_on = state.blink_on;
+        }
+        if moved {
+            self.move_time = time;
+            if self.history.len() == CURSOR_HISTORY {
+                self.history.pop_back();
+            }
+            self.history.push_front(CursorSample {
+                rect: state.rect,
+                time,
+                _pad: [0.0; 3],
+            });
+        }
+        if changed {
+            self.change_time = time;
+        }
+    }
+
+    fn to_uniform(&self) -> CursorUniform {
+        let mut history = [CursorSample::default(); CURSOR_HISTORY];
+        for (slot, sample) in history.iter_mut().zip(&self.history) {
+            *slot = *sample;
+        }
+        CursorUniform {
+            current: self.current,
+            previous: self.previous,
+            move_time: self.move_time,
+            change_time: self.change_time,
+            history_len: self.history.len() as u32,
+            _pad: 0,
+            history,
+        }
+    }
 }
 
 /// Where a panel sits in the window, in physical pixels, plus its state.
@@ -277,6 +413,9 @@ pub struct EffectPanel {
     /// Whether the panel has keyboard focus (window focused, active split).
     pub focused: bool,
     pub theme: EffectTheme,
+    pub cursor: EffectCursor,
+    /// Changes when the view jumps (e.g. scrollback), resetting cursor history.
+    pub view: u64,
 }
 
 impl EffectPanel {
@@ -327,6 +466,7 @@ struct PanelState {
     focus_time: f32,
     /// Last converted theme, reused while the input is unchanged.
     theme: (EffectTheme, Vec<u8>),
+    cursor: Option<CursorTrack>,
 }
 
 /// Timing of one rendered frame.
@@ -356,6 +496,7 @@ impl EffectHost {
             focused: panel.focused,
             focus_time: t.time,
             theme: (panel.theme.clone(), panel.theme.to_uniform(colorspace)),
+            cursor: None,
         });
         if state.focused != panel.focused {
             state.focused = panel.focused;
@@ -375,8 +516,27 @@ impl EffectHost {
             focus_time: state.focus_time,
             _pad: [0; 2],
         };
+        let c = &panel.cursor;
+        let cursor = CursorState {
+            rect: c.rect,
+            color: shader_color(c.color, colorspace),
+            shape: c.shape,
+            visible: c.visible as u32,
+            blink_on: c.blink_on as u32,
+            time: t.time,
+        };
+        let view = (panel.view, [rect[2], rect[3]]);
+        match &mut state.cursor {
+            Some(track) => track.update(view, cursor, t.time),
+            None => state.cursor = Some(CursorTrack::new(view, cursor, t.time)),
+        }
+        let cursor = state.cursor.as_ref().map(CursorTrack::to_uniform);
         PanelUniforms {
-            blocks: [bytemuck::bytes_of(&frame).to_vec(), state.theme.1.clone()],
+            blocks: [
+                bytemuck::bytes_of(&frame).to_vec(),
+                state.theme.1.clone(),
+                cursor.map_or_else(Vec::new, |c| bytemuck::bytes_of(&c).to_vec()),
+            ],
         }
     }
 
@@ -749,6 +909,8 @@ fn effect_main(pos: vec2<f32>) -> vec4<f32> {
             cell_size: [1.0, 1.0],
             focused: false,
             theme: EffectTheme::default(),
+            cursor: EffectCursor::default(),
+            view: 0,
         };
         let frame = |host: &mut EffectHost, panel: &EffectPanel, time| {
             let t = FrameTime {
@@ -767,6 +929,52 @@ fn effect_main(pos: vec2<f32>) -> vec4<f32> {
     }
 
     #[test]
+    fn cursor_history_tracks_moves_and_resets_on_view_changes() {
+        let mut host = EffectHost::default();
+        let mut panel = EffectPanel {
+            id: 1,
+            rect: [0.0, 0.0, 10.0, 10.0],
+            cell_size: [1.0, 1.0],
+            focused: true,
+            theme: EffectTheme::default(),
+            cursor: EffectCursor {
+                visible: true,
+                ..Default::default()
+            },
+            view: 0,
+        };
+        let frame = |host: &mut EffectHost, panel: &EffectPanel, time| {
+            let t = FrameTime {
+                time,
+                delta: 0.0,
+                frame: 0,
+            };
+            let u = host.uniforms(t, panel, [0, 0, 10, 10], 1.0, Colorspace::DisplayP3);
+            bytemuck::pod_read_unaligned::<CursorUniform>(&u.blocks[2])
+        };
+        frame(&mut host, &panel, 1.0);
+        panel.cursor.rect = [1.0, 0.0, 1.0, 1.0];
+        frame(&mut host, &panel, 2.0);
+        // Blink alone is not a change.
+        panel.cursor.blink_on = true;
+        let c = frame(&mut host, &panel, 3.0);
+        assert_eq!(c.history_len, 2);
+        assert_eq!((c.history[0].rect[0], c.history[0].time), (1.0, 2.0));
+        assert_eq!((c.history[1].rect[0], c.history[1].time), (0.0, 1.0));
+        assert_eq!((c.move_time, c.change_time), (2.0, 1.0));
+        assert_eq!((c.current.time, c.current.blink_on), (2.0, 1));
+        assert_eq!(c.previous.rect[0], 0.0);
+
+        panel.cursor.shape = 2;
+        let c = frame(&mut host, &panel, 4.0);
+        assert_eq!((c.move_time, c.change_time, c.history_len), (2.0, 4.0, 2));
+
+        panel.view = 1;
+        let c = frame(&mut host, &panel, 5.0);
+        assert_eq!((c.history_len, c.move_time), (1, 5.0));
+    }
+
+    #[test]
     fn panel_projection_maps_corners() {
         let m = panel_projection([100.0, 50.0, 200.0, 100.0]);
         let ndc = |x: f32, y: f32| (m[0] * x + m[12], m[5] * y + m[13]);
@@ -782,6 +990,8 @@ fn effect_main(pos: vec2<f32>) -> vec4<f32> {
             cell_size: [1.0, 1.0],
             focused: false,
             theme: EffectTheme::default(),
+            cursor: EffectCursor::default(),
+            view: 0,
         };
         assert_eq!(p.clipped_rect((500.0, 500.0)), Some([10, 20, 490, 30]));
         assert_eq!(p.clipped_rect((5.0, 5.0)), None);
